@@ -1,0 +1,24 @@
+[project]
+name = "yoru-tracker"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Hayato M Yamanouchi", email = "122147942+HMYamano@users.noreply.github.com" }
+]
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "yoru",
+]
+
+[project.scripts]
+yoru-tracker = "yoru_tracker.app:main"
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+yoru = { path = "../YORU", editable = true }
+
+
