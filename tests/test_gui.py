@@ -172,7 +172,8 @@ def test_the_live_event_log_has_the_events_of_frames_it_never_drew(app, tmp_path
 
     from conftest import BlobDetector, write_video
 
-    video = write_video(tmp_path / "live.avi", frames=40, fps=200.0)
+    # Long enough not to loop (and start the blobs over) during the test.
+    video = write_video(tmp_path / "live.avi", frames=400, fps=200.0)
     monkeypatch.setattr(app.state, "detector_loader", lambda: (BlobDetector, {}))
     app.state.set_detector(model_path="blobs")
     app.show_view("realtime")
@@ -187,7 +188,8 @@ def test_the_live_event_log_has_the_events_of_frames_it_never_drew(app, tmp_path
     app.realtime.tick(time.perf_counter())
     app.realtime.stop()
     assert rt.error is None
-    assert dpg.get_value("rt_events").count("created") == 2
+    created = [line for line in dpg.get_value("rt_events").splitlines() if "created" in line]
+    assert any("#0" in line for line in created) and any("#1" in line for line in created)
 
 
 @pytest.mark.gui

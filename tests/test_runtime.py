@@ -281,14 +281,35 @@ class ScriptedDetector:
         return list(self.script[index])
 
 
+class LaggingDetector(ScriptedDetector):
+    """Done with a frame only once the camera is three frames further on.
+
+    Slower than the camera by construction, not by sleeping: how long a
+    sleep lasts on Windows depends on the timer resolution some other
+    program may have set.
+    """
+
+    def __init__(self, script, source):
+        super().__init__(script)
+        self.source = source
+
+    def detect(self, frame):
+        index = int(frame[0, 0, 0]) + 256 * int(frame[0, 0, 1])
+        deadline = time.time() + 5
+        while self.source.i < min(index + 4, self.source.n) and time.time() < deadline:
+            time.sleep(0.001)
+        return super().detect(frame)
+
+
 def _script(n):
     return [(det(10 + 2 * i, 10), det(300 - 2 * i, 200)) for i in range(n)]
 
 
-def _run_live(script, *, delay, timeout=10.0):
+def _run_live(script, *, delay=0.0, lag=False, timeout=10.0):
     snapshots = []
     source = CountingSource(len(script))
-    rt = RealtimeTracking(lambda: source, lambda: ScriptedDetector(script, delay),
+    detector = LaggingDetector(script, source) if lag else ScriptedDetector(script, delay)
+    rt = RealtimeTracking(lambda: source, lambda: detector,
                           TrackerConfig(), on_result=snapshots.append)
     rt.start()
     deadline = time.time() + timeout
@@ -301,7 +322,7 @@ def _run_live(script, *, delay, timeout=10.0):
 def test_live_results_equal_offline_tracking_of_the_same_frames():
     script = _script(60)
     # A detector slower than the camera, so frames are dropped on the way.
-    rt, source, snapshots = _run_live(script, delay=0.009)
+    rt, source, snapshots = _run_live(script, lag=True)
     assert isinstance(rt.error, EOFError)          # the source ran out: reported, not hidden
     assert source.closed
     assert len(snapshots) > 10
