@@ -1,0 +1,82 @@
+# Tests, including the benchmark regression gate, on every push and pull
+# request.
+#
+# YORU Tracker is built against a YORU checkout beside it (pyproject's
+# [tool.uv.sources]), so the job checks YORU out next to this repository:
+# the ref in the repository variable YORU_REF, or else yoru-tracker-lite,
+# the branch that carries YORU's external API.  A manual run can name any
+# ref.  `uv sync --locked` fails when uv.lock no longer matches pyproject
+# and that YORU: update the lock against the YORU it is meant for.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      yoru_ref:
+        description: YORU branch, tag or commit to test against
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  test:
+    # The platform YORU and YORU Tracker are made for.
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+        working-directory: YORU-Tracker
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: YORU-Tracker
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.YORU_REPOSITORY || 'Kamikouchi-lab/YORU' }}
+          ref: ${{ inputs.yoru_ref || vars.YORU_REF || 'yoru-tracker-lite' }}
+          path: YORU
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          # The version uv.lock was written with.
+          version: "0.12.23"
+          enable-cache: true
+          cache-dependency-glob: YORU-Tracker/uv.lock
+
+      - name: Install
+        run: uv sync --locked
+
+      - name: Tests and the benchmark regression gate
+        run: uv run pytest
+
+      - name: Benchmark table
+        run: |
+          uv run yoru-tracker bench --json bench.json | tee bench.txt
+          {
+            echo '### Benchmark (synthetic scenarios, seed 0)'
+            echo '```'
+            cat bench.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark
+          path: |
+            YORU-Tracker/bench.json
+            YORU-Tracker/bench.txt
+          if-no-files-found: ignore
