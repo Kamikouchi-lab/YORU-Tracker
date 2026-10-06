@@ -141,6 +141,29 @@ def test_the_open_video_is_kept_while_it_is_busy(app, video_file, tmp_path):
     assert app.video._task is None
 
 
+def test_the_live_event_log_has_the_events_of_frames_it_never_drew(app, tmp_path, monkeypatch):
+    import time
+
+    from conftest import BlobDetector, write_video
+
+    video = write_video(tmp_path / "live.avi", frames=40, fps=200.0)
+    monkeypatch.setattr(app.state, "detector_loader", lambda: (BlobDetector, {}))
+    app.state.set_detector(model_path="blobs")
+    app.show_view("realtime")
+    dpg.set_value("rt_source", "Video file (real time)")
+    dpg.set_value("rt_video", str(video))
+    app.realtime.start()
+    rt = app.realtime.rt
+    deadline = time.time() + 10
+    while rt.stats().processed_frames < 10 and rt.running and time.time() < deadline:
+        time.sleep(0.01)
+    # The first frame, where both blobs got their IDs, was never drawn.
+    app.realtime.tick(time.perf_counter())
+    app.realtime.stop()
+    assert rt.error is None
+    assert dpg.get_value("rt_events").count("created") == 2
+
+
 @pytest.mark.gui
 @pytest.mark.skipif(os.environ.get("YORU_TRACKER_GUI_TESTS") != "1",
                     reason="set YORU_TRACKER_GUI_TESTS=1 to open a real window")

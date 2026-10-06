@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as _dt
 import logging
 import time
+from collections import deque
 from pathlib import Path
 
 import dearpygui.dearpygui as dpg
@@ -30,6 +31,7 @@ TEX_TRACK = "rt_texture_track"
 TEX_W, TEX_H = 640, 480
 STATUS_W = 520
 STATUS_H = 234
+EVENT_LINES = 40
 
 _OVERLAYS = (
     ("track_boxes", "Track boxes"),
@@ -69,6 +71,11 @@ class RealtimeView:
         self._reported = False
         self._last_status = 0.0
         self._recording_path = None
+        #: Events of every processed frame, put here by the processing thread.
+        #: The display draws only the newest snapshot; the events of frames
+        #: it skipped would go with them.  As long as the log shows, so what
+        #: a stalled window (a file dialog) lets pile up stays bounded.
+        self._inbox = deque(maxlen=EVENT_LINES)
 
     # ------------------------------------------------------------------
     # Building
@@ -165,7 +172,7 @@ class RealtimeView:
                 self.table.build()
             with dpg.group():
                 dpg.add_text("Events")
-                self.events = EventLog("rt_events", length=40)
+                self.events = EventLog("rt_events", length=EVENT_LINES)
                 self.events.build(height=STATUS_H - 26)
 
     # ------------------------------------------------------------------
@@ -252,12 +259,17 @@ class RealtimeView:
             factory = lambda: PacedVideoSource(path)  # noqa: E731
             description = f"video {Path(path).name} played in real time"
         load, settings = self.state.detector_loader()
+        # A box of this run's own: a thread of an earlier run that is still
+        # finishing cannot put its events into this one's log.
+        inbox = deque(maxlen=EVENT_LINES)
         try:
             self.rt = RealtimeTracking(factory, load, config, detector_settings=settings,
-                                       source_description=description)
+                                       source_description=description,
+                                       on_result=lambda s: inbox.extend(s.result.events))
         except Exception as exc:
             self.app.report_error("Could not start live tracking", exc)
             return
+        self._inbox = inbox
         self.trails.clear()
         self.events.clear()
         self._last_key = None
@@ -352,7 +364,11 @@ class RealtimeView:
             dpg.set_value(TEX_RAW, widgets.texture_data(widgets.letterbox(raw, TEX_W, TEX_H)))
             dpg.set_value(TEX_TRACK, widgets.texture_data(widgets.letterbox(tracked, TEX_W, TEX_H)))
             rt.report_drawn(snap, draw_started)
-            self.events.add(snap.result.events)
+
+        events = []
+        while self._inbox:
+            events.append(self._inbox.popleft())
+        self.events.add(events)
 
         if now - self._last_status >= 0.25:
             self._last_status = now
