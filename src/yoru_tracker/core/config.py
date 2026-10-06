@@ -7,7 +7,7 @@ The configuration is saved next to every result (see
 :mod:`yoru_tracker.export.metadata`), so a tracking run can be repeated from
 its output alone.  On disk it looks like::
 
-    config_version: 1
+    config_version: 2
     tracker:
       mode: lite
       lifecycle:
@@ -24,6 +24,10 @@ its output alone.  On disk it looks like::
 Loading is strict.  An unknown key, a value of the wrong type or a value out
 of range is an error naming the offending key -- a misspelt ``max_age`` that
 silently fell back to its default would change every ID in the output.
+
+Version 1 had no ``high_confidence``, ``duplicate_iou`` or ``hidden_guard``;
+a version-1 file is read with them off, so that it still means -- and
+tracks -- exactly what it did when it was written.
 """
 
 from __future__ import annotations
@@ -37,7 +41,11 @@ from typing import Any, Mapping
 
 #: Version of the on-disk layout below.  Bump it when a key is renamed or
 #: its meaning changes, and teach :meth:`TrackerConfig.from_dict` the old one.
-CONFIG_VERSION = 1
+CONFIG_VERSION = 2
+
+#: What a version-1 file means by the keys it predates: they did not exist,
+#: so the behaviour they switch on did not either.
+_VERSION_1_ASSOCIATION = {"high_confidence": 0.0, "duplicate_iou": 0.0, "hidden_guard": False}
 
 __all__ = [
     "AdvancedConfig",
@@ -111,6 +119,30 @@ class AssociationConfig:
     recovery: bool = True
     #: Upper bound of that widening gate, in multiples of max_distance.
     recovery_gate_scale: float = 3.0
+    #: Detections less confident than this are not taken as an animal on
+    #: their own word: they never start a track, never bring a lost track
+    #: back and are never handed to one.  They only continue a track seen in
+    #: the previous frame whose predicted box they overlap by at least
+    #: low_confidence_iou -- an animal the detector sees less clearly for a
+    #: moment.  What they keep out is the box a detector adds around two
+    #: touching animals it has already reported one by one.  0 treats every
+    #: detection alike.
+    high_confidence: float = 0.5
+    low_confidence_iou: float = 0.5
+    #: Two detections of different classes overlapping by more than this IoU
+    #: are one animal reported twice -- a detector that suppresses overlaps
+    #: class by class keeps both -- and only the more confident is used.
+    #: Applies only while class_aware is off, when classes are behaviours of
+    #: one animal.  0 turns it off.
+    duplicate_iou: float = 0.5
+    #: Keep a lost ID from being given away where animals overlap.  A lost
+    #: track last seen inside a box another track holds this frame is taken
+    #: to be hidden there: its recovery gate does not widen, and with a known
+    #: population it is not handed a detection elsewhere.  And a detection
+    #: overlapping a box another track holds is never handed to a lost track:
+    #: it is a second box on an animal already followed far more often than
+    #: an animal that jumped.
+    hidden_guard: bool = True
 
 
 @dataclass(frozen=True)
@@ -185,6 +217,9 @@ class TrackerConfig:
             out.append("association.min_iou must be within [0, 1]")
         if ac.recovery_gate_scale < 1.0:
             out.append("association.recovery_gate_scale must be >= 1")
+        for name in ("high_confidence", "low_confidence_iou", "duplicate_iou"):
+            if not 0.0 <= getattr(ac, name) <= 1.0:
+                out.append(f"association.{name} must be within [0, 1]")
         if kc.process_noise <= 0:
             out.append("kalman.process_noise must be > 0")
         if kc.measurement_noise <= 0:
@@ -219,12 +254,14 @@ class TrackerConfig:
             if extra:
                 raise ConfigError([f"unknown top-level key(s): {', '.join(extra)}"])
             version = data.get("config_version", CONFIG_VERSION)
-            if version != CONFIG_VERSION:
+            if version not in (1, CONFIG_VERSION) or isinstance(version, bool):
                 raise ConfigError([
                     f"config_version {version!r} is not supported "
-                    f"(this YORU Tracker reads version {CONFIG_VERSION})"
+                    f"(this YORU Tracker reads versions 1 to {CONFIG_VERSION})"
                 ])
             data = data["tracker"]
+            if version == 1:
+                data = _from_version_1(data)
         problems = []
         config = _build(cls, data, "", problems)
         if problems:
@@ -258,6 +295,16 @@ class TrackerConfig:
         if path.suffix.lower() == ".json":
             return cls.from_dict(json.loads(text))
         return cls.from_yaml(text)
+
+
+def _from_version_1(data):
+    """A version-1 ``tracker`` mapping, with the keys version 2 added set to off."""
+    if not isinstance(data, Mapping):
+        return data  # _build reports it
+    association = data.get("association", {})
+    if not isinstance(association, Mapping):
+        return data
+    return {**data, "association": {**_VERSION_1_ASSOCIATION, **association}}
 
 
 def _build(cls, data, prefix, problems):

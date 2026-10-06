@@ -8,17 +8,26 @@ import math
 import numpy as np
 import pytest
 
-from yoru_tracker.tracking.association import CostModel, Probe, associate, pair_cost, solve
+from yoru_tracker.core.types import Detection
+from yoru_tracker.tracking.association import (
+    CostModel,
+    Probe,
+    associate,
+    duplicates,
+    pair_cost,
+    solve,
+)
 
 from conftest import det
 
 MODEL = CostModel()
 
 
-def probe(cx, cy, gate=100.0, cls=0, anchors=None, penalty=0.0, w=40.0, h=16.0, angle=0.0):
+def probe(cx, cy, gate=100.0, cls=0, anchors=None, penalty=0.0, w=40.0, h=16.0, angle=0.0,
+          min_iou=0.0):
     box = (cx, cy, w, h, angle)
     return Probe(box=box, class_id=cls, anchors=anchors or ((cx, cy),), gate=gate,
-                 penalty=penalty)
+                 penalty=penalty, min_iou=min_iou)
 
 
 def test_outside_the_distance_gate_is_not_a_candidate():
@@ -52,6 +61,37 @@ def test_closer_and_better_aligned_is_cheaper():
 def test_the_nearest_anchor_is_used():
     p = probe(0, 0, anchors=((0.0, 0.0), (200.0, 0.0)), gate=50)
     assert pair_cost(p, det(198, 0), MODEL) is not None
+
+
+def test_a_probes_min_iou_is_a_gate_however_near():
+    # A box around this animal and its neighbour 20 px below: centred only
+    # 10 px away, but overlapping this animal's box by IoU 0.44.
+    pair = Detection.from_xyxy(-20, -8, 20, 28, confidence=0.4, class_id=0, class_name="fly")
+    assert pair_cost(probe(0, 0, min_iou=0.5), pair, MODEL) is None
+    assert pair_cost(probe(0, 0), pair, MODEL) is not None
+    assert pair_cost(probe(0, 0, min_iou=0.5), det(2, 0), MODEL) is not None
+
+
+def test_a_box_of_another_class_on_the_same_animal_is_a_repeat():
+    fly = det(100, 100, conf=0.9)
+    wing = det(102, 101, conf=0.8, cls=1, name="wing_extension")
+    assert duplicates([wing, det(300, 100, conf=0.95), fly], 0.5) == {0}
+    # The more confident box is kept, whichever class it has.
+    assert duplicates([det(100, 100, conf=0.7), wing], 0.5) == {0}
+
+
+def test_only_overlaps_across_classes_are_repeats():
+    # Boxes of one class are left to the detector's own suppression.
+    assert duplicates([det(100, 100, conf=0.9), det(101, 100, conf=0.8)], 0.5) == frozenset()
+    # Neighbours of different classes overlap far less than one animal does.
+    side_by_side = [det(100, 100), det(100, 114, cls=1, name="wing_extension")]
+    assert duplicates(side_by_side, 0.5) == frozenset()
+
+
+def test_equal_confidences_keep_the_earlier_detection():
+    a, b = det(100, 100, conf=0.8), det(101, 100, conf=0.8, cls=1, name="wing_extension")
+    assert duplicates([a, b], 0.5) == {1}
+    assert duplicates([b, a], 0.5) == {1}
 
 
 def test_penalty_is_added():

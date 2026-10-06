@@ -13,13 +13,17 @@ match just because every detection has to go somewhere.  Among the candidates
 the assignment minimises total cost, where leaving a track and a detection
 both unmatched costs ``distance_weight + iou_weight``: a pair dearer than
 that is not worth making, even if it is inside the gate.
+
+Before any of this, :func:`duplicates` finds the detections that only repeat
+a more confident one of another class, so that one animal is not offered to
+the tracks twice.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import FrozenSet, List, Optional, Sequence, Tuple
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
@@ -49,7 +53,9 @@ class Probe:
     track's box being placed at whichever is nearest; the first is the motion
     prediction, a second can be the last place the track was seen.  *gate*
     is the furthest a detection may be from every anchor, in pixels.
-    *penalty* is added to every pair this track forms.
+    *penalty* is added to every pair this track forms.  *min_iou* is the
+    least a detection must overlap the track's box to be a candidate at all,
+    however near it is.
     """
 
     box: Box
@@ -57,6 +63,7 @@ class Probe:
     anchors: Tuple[Point, ...]
     gate: float
     penalty: float = 0.0
+    min_iou: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -99,8 +106,10 @@ def pair_cost(probe: Probe, detection: Detection, model: CostModel) -> Optional[
 
     reference = moved(probe.box, *best_anchor)
     det_box = detection.box
-    need_iou = model.iou_weight > 0 or model.min_iou > 0
+    need_iou = model.iou_weight > 0 or model.min_iou > 0 or probe.min_iou > 0
     iou = obb_iou(reference, det_box) if need_iou else 0.0
+    if iou < probe.min_iou:
+        return None
     if (model.min_iou > 0 and iou < model.min_iou
             and distance > 0.5 * max(long_side(reference), long_side(det_box))):
         return None
@@ -114,6 +123,30 @@ def pair_cost(probe: Probe, detection: Detection, model: CostModel) -> Optional[
     if model.size_weight > 0:
         cost += model.size_weight * size_difference(reference, det_box)
     return cost + probe.penalty
+
+
+def duplicates(detections: Sequence[Detection], max_iou: float) -> FrozenSet[int]:
+    """Indices of the detections that repeat a more confident one of another class.
+
+    A detector that suppresses overlapping boxes class by class -- YOLOv5's
+    default -- reports an animal that is, say, extending a wing both as
+    ``fly`` and as ``wing_extension``.  Two such boxes overlapping by more
+    than *max_iou* are taken for one animal; going down the detections from
+    the most confident, a box is a repeat if it overlaps one already kept.
+    Boxes of one class are left alone: separating those is the detector's
+    own suppression, which has already run.  Equal confidences are taken in
+    input order, so the answer depends on nothing but the detections.
+    """
+    order = sorted(range(len(detections)), key=lambda j: (-detections[j].confidence, j))
+    kept: List[Detection] = []
+    repeats = set()
+    for j in order:
+        det = detections[j]
+        if any(k.class_id != det.class_id and obb_iou(k.box, det.box) > max_iou for k in kept):
+            repeats.add(j)
+        else:
+            kept.append(det)
+    return frozenset(repeats)
 
 
 def cost_matrix(probes: Sequence[Probe], detections: Sequence[Detection],

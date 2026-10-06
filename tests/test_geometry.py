@@ -9,6 +9,7 @@ import pytest
 from yoru_tracker.tracking.geometry import (
     axis_difference,
     clip_convex,
+    contains,
     elongation,
     long_axis,
     obb_iou,
@@ -94,3 +95,11 @@ def test_clipping_works_for_either_winding():
 
 def test_degenerate_boxes_have_no_overlap():
     assert obb_iou((0, 0, 0, 10, 0), (0, 0, 10, 10, 0)) == 0.0
+
+
+def test_contains_includes_the_edge_and_turns_with_the_box():
+    upright = (0.0, 0.0, 40.0, 16.0, 0.0)
+    assert contains(upright, (19.0, 7.0)) and contains(upright, (20.0, 8.0))
+    assert not contains(upright, (0.0, 9.0))
+    turned = (0.0, 0.0, 40.0, 16.0, math.pi / 2)  # the long side now runs along y
+    assert contains(turned, (0.0, 19.0)) and not contains(turned, (19.0, 0.0))

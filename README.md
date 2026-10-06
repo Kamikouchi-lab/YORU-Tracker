@@ -134,10 +134,12 @@ error naming it, never a silent default. The settings most worth knowing:
 | `lifecycle.min_hits` | `2` | Detections a newcomer needs before it gets an ID, so one-frame false detections never use up a number. |
 | `association.max_distance` | `100` | Pixels a detection may be from where a track is predicted to be. Scale it to your magnification. |
 | `association.class_aware` | `false` | Keep `false` when classes are behaviours (`solo`, `copulation`) — an animal changes behaviour, not identity. `true` when classes are different animals. |
+| `association.high_confidence` | `0.5` | Detections less confident than this never start a track, bring one back or take a lost ID; they only continue a track seen a frame ago, right where it is. This keeps out the weaker box a detector adds around two touching animals it has already reported one by one. `0`: every detection alike. |
+| `association.hidden_guard` | `true` | An animal lost inside another's box (two seen as one) is hidden there: its ID waits for it instead of jumping to a detection elsewhere, and a box overlapping a tracked animal is never handed to a lost ID. |
 | `kalman.enabled` | `true` | Constant-velocity motion prediction. |
 
 ```yaml
-config_version: 1
+config_version: 2
 tracker:
   mode: lite
   lifecycle:
@@ -148,6 +150,14 @@ tracker:
     max_distance: 100.0
 ```
 
+In a crowded arena, give `population` whenever the number of animals is
+known: without it, a box around two touching animals that the detector scores
+above `high_confidence` can still start a track of its own. `yoru-tracker
+config` lists every setting; [docs/api.md](docs/api.md) explains the ones not
+in this table. A `config_version: 1` file — from before
+`high_confidence`, `duplicate_iou` and `hidden_guard` — is read with them off,
+so it tracks exactly as it did when it was written.
+
 ## How the Lite tracker works
 
 Lite is an online tracker: it uses only the current frame and what it
@@ -156,16 +166,27 @@ revises a decision, so it can sit in a closed loop. Per frame:
 
 1. Predict every track's centre (Kalman filter on position and velocity, time
    in frames, so dropped camera frames are longer steps).
-2. **Primary association** — every confirmed track, visible or lost, against
-   the detections: gated by distance from the prediction, cost from distance,
-   oriented-box IoU and long-axis agreement, solved with the Hungarian method.
-3. **Recovery association** — tracks still unmatched against what is left,
-   with a gate that widens the longer they have been missing.
-4. Newcomers: tentative tracks, given an ID after `min_hits` sightings.
-5. Unmatched tracks are LOST (still predicted); past `max_age` they are
+2. Sort the detections: a box of another class on an animal already reported
+   more confidently is set aside; the rest are *trusted* (confidence at least
+   `high_confidence`) or *doubtful*.
+3. **Primary association** — every confirmed track, visible or lost, against
+   the trusted detections: gated by distance from the prediction, cost from
+   distance, oriented-box IoU and long-axis agreement, solved with the
+   Hungarian method.
+4. **Recovery association** — tracks still unmatched against what is left,
+   with a gate that widens the longer they have been missing — but not for a
+   track lost inside a box another track holds: that animal is hidden there.
+5. **Doubtful association** — a track seen a frame ago and still unmatched may
+   take a doubtful detection that overlaps its predicted box.
+6. Newcomers: tentative tracks from trusted detections, given an ID after
+   `min_hits` sightings.
+7. Unmatched tracks are LOST (still predicted); past `max_age` they are
    retired — unless the population is known, in which case a candidate seen
    `min_hits` times while every ID is taken is handed to the nearest lost track,
-   together with the motion the candidate has followed since it appeared.
+   together with the motion the candidate has followed since it appeared. A
+   hidden track waits instead, and a candidate overlapping a tracked animal is
+   not handed over: it is far more often a second box on that animal than an
+   animal that jumped.
 
 A lost track found again where its motion model gave it less than a 1% chance
 (the animal jumped, or stopped while unseen) starts its motion afresh there,
@@ -182,7 +203,10 @@ file — this is tested.
 `yoru-tracker bench` scores trackers on synthetic behavioural scenarios
 (fly-sized animals, detector jitter and misses), one row per scenario —
 crossings, courtship, contact, overlap, dropout, entry and exit, a jump, high
-density. *Baseline* is YORU's existing frame-to-frame matching
+density, and the spare boxes of a crowded arena: a weaker box around two
+touching animals already reported singly, a second box of another class on
+one animal, an animal hidden in another's box while such a box appears
+elsewhere, and forty animals at once. *Baseline* is YORU's existing frame-to-frame matching
 (`match_to_previous`), called directly. *Lite+N* is Lite told the number of
 animals. Seed 0:
 
@@ -204,16 +228,34 @@ animals. Seed 0:
 | obb_crossing | 0 | 0 | 6 | 0.995 | 0.995 | 0.470 |
 | jump | 1 | 0 | 1 | 0.751 | 0.999 | 0.750 |
 | long_contact | 1 | 0 | 1 | 0.725 | 0.895 | 0.724 |
-| **total** | **5** | **4** | **128** | | | |
+| spanning_box | 2 | 0 | 6 | 0.953 | 0.995 | 0.662 |
+| class_duplicates | 0 | 0 | 93 | 0.996 | 0.996 | 0.139 |
+| hidden_in_merge | 11 | 0 | 11 | 0.644 | 0.960 | 0.433 |
+| dense_arena | 63 | 51 | 218 | 0.735 | 0.753 | 0.402 |
+| **total** | **81** | **55** | **456** | | | |
 
-Lite takes about 0.15 ms per frame here — small next to any detector. The
-remaining switches are animals in contact that the detector reports as one
-box: which animal leaves the box on which side cannot be told from position
-alone. That is the job of the planned Advanced tracker.
+Lite takes 0.1–0.5 ms per frame on the small scenarios and about 2 ms with
+forty animals — small next to any detector. Most remaining switches are
+animals in contact that the detector reports as one box: which animal leaves
+the box on which side cannot be told from position alone. That is the job of
+the planned Advanced tracker. In hidden_in_merge without the number of
+animals, a confident box around two touching animals starts a track of its
+own; with `population` it cannot.
+
+Before the spare-box handling (`high_confidence`, `duplicate_iou`,
+`hidden_guard`), the last four scenarios gave Lite 8, 58, 11 and 101 switches,
+and Lite+N 0, 0, 6 and 96.
 
 On a real recording — two flies, 9002 frames, including several minutes of
 copulation during which the detector reports one box for the pair — default
 Lite gave 38 IDs; with `population: 2`, exactly 2.
+
+On another — sixty flies in a closed arena, 9000 frames, a YOLOv5 model that
+adds a weaker box around touching flies and keeps `fly` and `wing_extension`
+boxes on the same fly — the version-1 settings gave 795 IDs and the current
+defaults 419. With `population: 60` there are 60 either way, but jumps of
+over 25 px in one frame — the mark of a track taking another fly's
+detection — fell from 90 to 4.
 
 `tests/test_evaluation.py` holds these numbers as a regression gate: a change
 that makes any scenario worse fails the tests.
@@ -228,7 +270,7 @@ when `log_events: true`.
 ## Development
 
 ```bash
-uv run pytest                                        # 250 tests, ~11 s
+uv run pytest                                        # 280 tests, ~16 s
 YORU_TRACKER_GUI_TESTS=1 uv run pytest -m gui         # also open the real window
 ```
 
