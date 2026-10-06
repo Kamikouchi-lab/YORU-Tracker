@@ -6,6 +6,7 @@
 from yoru_tracker.drawing.overlays import (
     OverlayOptions,
     TrailBook,
+    TrailPoint,
     draw_detections,
     draw_tracking,
     track_color,
@@ -15,6 +16,7 @@ from yoru_tracker.drawing.overlays import (
 __all__ = [
     "OverlayOptions",
     "TrailBook",
+    "TrailPoint",
     "draw_detections",
     "draw_tracking",
     "track_color",

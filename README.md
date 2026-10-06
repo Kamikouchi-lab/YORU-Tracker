@@ -53,7 +53,8 @@ view follows the run; afterwards, scrub the timeline or step with ←/→ (space
 plays). Every frame shows its tracks, their state, confidence, velocity and
 match cost, and the events of that frame (created, lost, recovered, retired).
 Overlays — track boxes, IDs, trails, raw detections, predicted boxes of lost
-tracks, velocity, confidence — are toggled under the image. *Export CSV* writes
+tracks, velocity, confidence — are toggled under the image; with predicted
+boxes off, trails run only through where the animals were seen. *Export CSV* writes
 the tracks; *Render video* writes the video with the overlay. After changing
 the tracker settings, *Re-track* tracks the stored detections again in seconds,
 without running the model.

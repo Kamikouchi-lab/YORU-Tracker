@@ -7,6 +7,10 @@ Every overlay has a switch in :class:`OverlayOptions`; the defaults show
 track boxes, IDs and short trails and nothing else, which stays readable with
 a dozen animals.  Drawing reads results and never feeds anything back, so
 what is shown cannot change what is tracked.
+
+A trail point remembers whether it was only predicted.  With predicted
+positions hidden, a trail runs through the places the animal was seen, and a
+lost track -- whose box is hidden -- shows no trail either.
 """
 
 from __future__ import annotations
@@ -24,6 +28,8 @@ from yoru.libs.obb import obb_corners
 from yoru_tracker.core.types import Detection, TrackingResult
 
 Point = Tuple[float, float]
+#: ``(x, y, predicted)``: where a track was, and whether that was a prediction.
+TrailPoint = Tuple[float, float, bool]
 
 _GOLDEN = 0.6180339887498949
 _DETECTION_COLOR = (170, 170, 170)
@@ -109,7 +115,7 @@ class TrailBook:
         for t in result.tracked:
             present.add(t.track_id)
             trail = self._trails.setdefault(t.track_id, deque(maxlen=self.length))
-            trail.append((t.cx, t.cy))
+            trail.append((t.cx, t.cy, t.predicted))
         for track_id in list(self._trails):
             if track_id not in present:
                 del self._trails[track_id]
@@ -117,27 +123,27 @@ class TrailBook:
     def clear(self) -> None:
         self._trails.clear()
 
-    def trails(self) -> Dict[int, List[Point]]:
+    def trails(self) -> Dict[int, List[TrailPoint]]:
         return {k: list(v) for k, v in self._trails.items()}
 
 
 def trails_from_results(results: Sequence[TrackingResult], index: int,
-                        length: int) -> Dict[int, List[Point]]:
+                        length: int) -> Dict[int, List[TrailPoint]]:
     """Trails ending at ``results[index]``, for scrubbing through a video."""
     if not results or index < 0:
         return {}
     index = min(index, len(results) - 1)
     alive = {t.track_id for t in results[index].tracked}
-    trails: Dict[int, List[Point]] = {k: [] for k in alive}
+    trails: Dict[int, List[TrailPoint]] = {k: [] for k in alive}
     for result in results[max(0, index - length + 1): index + 1]:
         for t in result.tracked:
             if t.track_id in trails:
-                trails[t.track_id].append((t.cx, t.cy))
+                trails[t.track_id].append((t.cx, t.cy, t.predicted))
     return trails
 
 
 def draw_tracking(img, result: Optional[TrackingResult], options: OverlayOptions = OverlayOptions(),
-                  *, trails: Optional[Dict[int, List[Point]]] = None,
+                  *, trails: Optional[Dict[int, List[TrailPoint]]] = None,
                   detections: Optional[Iterable[Detection]] = None):
     """Draw *result* on *img* (in place) and return it."""
     scale = _scale(img)
@@ -147,10 +153,16 @@ def draw_tracking(img, result: Optional[TrackingResult], options: OverlayOptions
         return img
 
     if options.trajectories and trails:
+        # Lost tracks, whose boxes are not drawn, get no trail either.
+        hidden = set() if options.predicted else {t.track_id for t in result.tracked
+                                                  if t.predicted}
         for track_id, points in trails.items():
-            if len(points) < 2:
+            if track_id in hidden:
                 continue
-            pts = np.array(points, dtype=np.int32).reshape(-1, 1, 2)
+            shown = [p[:2] for p in points if options.predicted or not p[2]]
+            if len(shown) < 2:
+                continue
+            pts = np.array(shown, dtype=np.int32).reshape(-1, 1, 2)
             cv2.polylines(img, [pts], False, track_color(track_id), scale, cv2.LINE_AA)
 
     for t in result.tracked:
