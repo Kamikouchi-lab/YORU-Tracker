@@ -141,6 +141,43 @@ def test_the_open_video_is_kept_while_it_is_busy(app, video_file, tmp_path):
     assert app.video._task is None
 
 
+def test_the_batch_table_names_files_below_the_folder_and_changes_only_cells(app, tmp_path,
+                                                                            monkeypatch):
+    import time
+
+    from conftest import BlobDetector, write_video
+
+    folder = tmp_path / "videos"
+    for sub in ("day1", "day2"):
+        (folder / sub).mkdir(parents=True)
+        write_video(folder / sub / "fly.avi", frames=10)
+    monkeypatch.setattr(app.state, "detector_loader", lambda: (BlobDetector, {}))
+    app.state.set_detector(model_path="blobs")
+    app.show_view("batch")
+    dpg.set_value("batch_folder", str(folder))
+    dpg.set_value("batch_recursive", True)
+    app.batch.scan()
+
+    def table():
+        return [[dpg.get_value(cell) for cell in dpg.get_item_children(row, 1)]
+                for row in dpg.get_item_children("batch_table", 1)]
+
+    assert [row[0] for row in table()] == [os.path.join("day1", "fly.avi"),
+                                           os.path.join("day2", "fly.avi")]
+    dpg.set_value("batch_outdir", str(tmp_path / "out"))
+    app.batch.start()
+    rows = dpg.get_item_children("batch_table", 1)
+    assert not dpg.get_item_configuration("batch_recursive")["enabled"]
+    deadline = time.time() + 30
+    while app.batch.job.running and time.time() < deadline:
+        app.tick()
+        time.sleep(0.01)
+    app.tick()
+    assert dpg.get_item_children("batch_table", 1) == rows      # the same rows, not new ones
+    assert [row[1] for row in table()] == ["done", "done"]
+    assert dpg.get_item_configuration("batch_recursive")["enabled"]
+
+
 def test_scrubbing_back_shows_the_frame_the_results_belong_to(app, tmp_path, monkeypatch,
                                                               late_seeks):
     import time

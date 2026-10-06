@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 
@@ -66,6 +67,22 @@ def test_render_with_a_detections_csv_is_refused_not_ignored(tmp_path):
     with pytest.raises(SystemExit, match="--render"):
         main(["track", str(tmp_path / "d.csv"), "--render"])
     assert not (tmp_path / "d_tracks.csv").exists()
+
+
+def test_batch_names_each_file_below_the_folder(tmp_path, capsys, monkeypatch):
+    from conftest import BlobDetector, write_video
+
+    from yoru_tracker.runtime import detection
+
+    for sub in ("day1", "day2"):
+        (tmp_path / "videos" / sub).mkdir(parents=True)
+        write_video(tmp_path / "videos" / sub / "fly.avi", frames=8)
+    monkeypatch.setattr(detection.YoruDetector, "load",
+                        classmethod(lambda cls, config: BlobDetector()))
+    assert main(["batch", str(tmp_path / "videos"), "--out", str(tmp_path / "out"),
+                 "--model", "blobs.pt", "--recursive"]) == 0
+    out = capsys.readouterr().out
+    assert os.path.join("day1", "fly.avi") in out and os.path.join("day2", "fly.avi") in out
 
 
 def test_bench_runs(capsys, tmp_path):

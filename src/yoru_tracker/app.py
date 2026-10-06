@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -224,8 +225,10 @@ def _cmd_batch(args) -> int:
 
     def report(item):
         if item.status in ("done", "failed", "stopped"):
+            # Below the folder: with --recursive, two fly.mp4 are told apart.
+            name = os.path.relpath(item.path, args.folder)
             message = item.error or (f"note: {item.note}" if item.note else "")
-            print(f"[{item.status:>7}] {item.name}  frames={item.frames} ids={item.track_ids}"
+            print(f"[{item.status:>7}] {name}  frames={item.frames} ids={item.track_ids}"
                   + (f"  {message}" if message else ""), flush=True)
 
     items = run_batch([BatchItem(v) for v in videos], detector, config, args.out,

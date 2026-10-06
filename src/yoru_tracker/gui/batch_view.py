@@ -1,11 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) YORU contributors — see LICENSE for details.
 
-"""Batch tracking: every video in a folder, one row of status per file."""
+"""Batch tracking: every video in a folder, one row of status per file.
+
+The rows are made once, when the folder is read and when a batch starts;
+while it runs only the cells whose text or colour changed are touched, so a
+folder of hundreds of videos costs the window nothing.  A file is named by
+its path below the chosen folder: with subfolders, two ``fly.mp4`` are told
+apart.
+"""
 
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import dearpygui.dearpygui as dpg
@@ -36,6 +44,10 @@ class BatchView:
         self.job = None
         self._reported = False
         self._last_refresh = 0.0
+        self._folder = ""
+        self._labels = []
+        self._cells = []   # per row, the text items of its cells
+        self._shown = []   # per row, (texts, colour) last put on screen
 
     def build(self, texture_registry) -> None:
         with dpg.window(tag=WINDOW, show=False, no_title_bar=True, no_move=True,
@@ -67,7 +79,8 @@ class BatchView:
         with dpg.group(horizontal=True):
             dpg.add_input_text(tag="batch_folder", readonly=True, hint="folder of videos",
                                width=CONTROLS_W - 110)
-            dpg.add_button(label="Browse", width=80, callback=lambda: self.choose_folder())
+            dpg.add_button(label="Browse", tag="batch_browse_folder", width=80,
+                           callback=lambda: self.choose_folder())
         dpg.add_checkbox(label="Include subfolders", tag="batch_recursive",
                          callback=lambda: self.scan())
         dpg.add_text("Detector model")
@@ -151,9 +164,41 @@ class BatchView:
         except Exception as exc:
             self.app.report_error("Could not list the folder", exc)
             return
-        widgets.set_table_rows("batch_table", [(Path(v).name, "pending", "", "", "")
-                                               for v in self.videos])
+        self._folder = folder
+        self._build_rows(self.videos)
         dpg.set_value("batch_status", f"{len(self.videos)} video(s) found.")
+
+    def _label(self, path: str) -> str:
+        """*path* below the chosen folder: ``day1\\fly.mp4``, not just ``fly.mp4``."""
+        try:
+            return os.path.relpath(path, self._folder) if self._folder else Path(path).name
+        except ValueError:  # on another drive
+            return path
+
+    def _build_rows(self, paths) -> None:
+        """One row per video, every one pending; later only cells change."""
+        for child in dpg.get_item_children("batch_table", 1) or []:
+            dpg.delete_item(child)
+        self._labels = [self._label(p) for p in paths]
+        color = _STATUS_COLORS["pending"]
+        self._cells, self._shown = [], []
+        for label in self._labels:
+            texts = (label, "pending", "", "", "")
+            with dpg.table_row(parent="batch_table"):
+                self._cells.append([dpg.add_text(t, color=color) for t in texts])
+            self._shown.append((texts, color))
+
+    def _update_row(self, i: int, texts, color) -> None:
+        old_texts, old_color = self._shown[i]
+        if (texts, color) == (old_texts, old_color):
+            return
+        for cell, text, old in zip(self._cells[i], texts, old_texts):
+            if text != old:
+                dpg.set_value(cell, text)
+        if color != old_color:
+            for cell in self._cells[i]:
+                dpg.configure_item(cell, color=color)
+        self._shown[i] = (texts, color)
 
     def start(self) -> None:
         from yoru_tracker.runtime.batch import BatchJob
@@ -174,6 +219,7 @@ class BatchView:
         self.job = BatchJob(self.videos, load, self.state.tracker_config,
                             dpg.get_value("batch_outdir"), detector_settings=settings,
                             include_predicted=dpg.get_value("batch_inc_pred"))
+        self._build_rows([item.path for item in self.job.items])   # the last run's ends gone
         self._reported = False
         dpg.set_value("batch_report", "")
         self.job.start()
@@ -188,27 +234,29 @@ class BatchView:
         running = self.job is not None and self.job.running
         dpg.configure_item("batch_run", enabled=not running)
         dpg.configure_item("batch_stop", enabled=running)
+        # The rows belong to the running batch: the folder stays as it is.
+        dpg.configure_item("batch_browse_folder", enabled=not running)
+        dpg.configure_item("batch_recursive", enabled=not running)
 
     def _refresh_table(self) -> None:
         items = self.job.items
-        rows, colors = [], []
-        for item in items:
+        for i, item in enumerate(items):
             frames = f"{item.frames}/{item.total_frames}" if item.total_frames else (
                 str(item.frames) if item.frames else "")
-            rows.append((item.name, item.status, frames,
-                         item.track_ids if item.status == "done" else "", item.error or item.note))
-            colors.append(_STATUS_COLORS.get(item.status))
-        widgets.set_table_rows("batch_table", rows, colors)
+            texts = (self._labels[i], item.status, frames,
+                     str(item.track_ids) if item.status == "done" else "",
+                     item.error or item.note)
+            self._update_row(i, texts, _STATUS_COLORS.get(item.status))
         finished = sum(1 for i in items if i.status in ("done", "failed", "stopped"))
-        current = next((i for i in items if i.status == "running"), None)
+        current = next((i for i, item in enumerate(items) if item.status == "running"), None)
         fraction = finished / max(1, len(items))
-        if current is not None and current.total_frames:
-            fraction += current.frames / current.total_frames / max(1, len(items))
+        if current is not None and items[current].total_frames:
+            fraction += items[current].frames / items[current].total_frames / max(1, len(items))
         dpg.set_value("batch_progress", min(1.0, fraction))
         dpg.configure_item("batch_progress", overlay=f"{finished}/{len(items)} files")
         status = f"{self.job.phase}"
         if current is not None:
-            status += f": {current.name}"
+            status += f": {self._labels[current]}"
         dpg.set_value("batch_status", status)
 
     def tick(self, now: float) -> None:
