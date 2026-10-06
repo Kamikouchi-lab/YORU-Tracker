@@ -39,17 +39,18 @@ jobs:
         shell: bash
         working-directory: YORU-Tracker
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: YORU-Tracker
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: ${{ vars.YORU_REPOSITORY || 'Kamikouchi-lab/YORU' }}
           ref: ${{ inputs.yoru_ref || vars.YORU_REF || 'yoru-tracker-lite' }}
           path: YORU
 
-      - uses: astral-sh/setup-uv@v6
+      # setup-uv publishes immutable full-version tags only (no @v10).
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           # The version uv.lock was written with.
           version: "0.12.23"
@@ -72,7 +73,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: benchmark
