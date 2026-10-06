@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Environments
+.venv/
+
+# Test / tool caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Models and outputs never belong in the repository
+*.pt
+*.pth
+*.onnx
+results/

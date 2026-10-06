@@ -1,18 +1,35 @@
 [project]
 name = "yoru-tracker"
 version = "0.1.0"
-description = "Add your description here"
+description = "YORU Tracker - multi-animal tracking built on YORU's detectors"
 readme = "README.md"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
 authors = [
     { name = "Hayato M Yamanouchi", email = "122147942+HMYamano@users.noreply.github.com" }
 ]
 requires-python = ">=3.10,<3.11"
 dependencies = [
-    "yoru",
+    # Detectors, OBB geometry, cameras and the GUI primitives come from YORU,
+    # through the names its docs/external_api.md promises to keep.  The bound
+    # is the 2.x line that document describes.
+    "yoru>=2.0.0b3,<3",
+    # Imported directly.  Unpinned on purpose: YORU pins them, and a second
+    # set of pins here could only disagree with it.
+    "numpy",
+    "scipy",
+    "opencv-python",
+    "dearpygui",
+    "pyyaml",
 ]
 
 [project.scripts]
 yoru-tracker = "yoru_tracker.app:main"
+
+[dependency-groups]
+dev = [
+    "pytest==7.4.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]
@@ -21,4 +38,10 @@ build-backend = "uv_build"
 [tool.uv.sources]
 yoru = { path = "../YORU", editable = true }
 
-
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+markers = [
+    "gui: opens a real window",
+    "slow: runs a real detector model",
+]
