@@ -60,3 +60,9 @@ new failure case instead.
 Run with `.venv/Scripts/python.exe` or `uv run`; bare `python` on this machine
 is a broken Windows Store stub. Tests: `uv run pytest` (GUI window tests:
 `YORU_TRACKER_GUI_TESTS=1`).
+
+CI (`.github/workflows/ci.yml`, Windows) checks YORU out beside the
+repository at `vars.YORU_REF` (default `yoru-tracker-lite`) and runs
+`uv sync --locked`: when YORU's dependencies change, run `uv lock` here, or CI
+fails. Keep tests free of sleep-based timing -- a Windows sleep lasts as long
+as the system timer resolution allows (1 to 15.6 ms).

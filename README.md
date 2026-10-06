@@ -228,9 +228,15 @@ when `log_events: true`.
 ## Development
 
 ```bash
-uv run pytest                                        # 180+ tests, ~10 s
+uv run pytest                                        # 250 tests, ~11 s
 YORU_TRACKER_GUI_TESTS=1 uv run pytest -m gui         # also open the real window
 ```
+
+CI (`.github/workflows/ci.yml`) runs `uv sync --locked`, the tests — the
+benchmark regression gate among them — and the benchmark table on Windows,
+with YORU checked out beside the repository at `yoru-tracker-lite`. The
+repository variables `YORU_REF` and `YORU_REPOSITORY` point it elsewhere; a
+manual run can name any YORU ref.
 
 ```text
 src/yoru_tracker/
