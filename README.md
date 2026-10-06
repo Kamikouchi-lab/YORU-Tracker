@@ -114,7 +114,9 @@ frame_id track_id track_state predicted vx vy track_confidence association_cost
 ```
 
 `total_time` is the frame time in seconds, `angle` is in radians (0 for upright
-boxes), `vx`/`vy` are pixels per frame. Rows for lost tracks' predicted
+boxes), `vx`/`vy` are pixels per frame. A video that states no frame rate has
+it measured from its frames' timestamps, or, without those, 30 fps assumed;
+the window, the command line and `source.fps_source` in the JSON say which. Rows for lost tracks' predicted
 positions are only written when asked for (`--include-predicted`); they have
 `predicted` = 1 and no `confidence`.
 

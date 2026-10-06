@@ -196,7 +196,7 @@ class BatchView:
             frames = f"{item.frames}/{item.total_frames}" if item.total_frames else (
                 str(item.frames) if item.frames else "")
             rows.append((item.name, item.status, frames,
-                         item.track_ids if item.status == "done" else "", item.error))
+                         item.track_ids if item.status == "done" else "", item.error or item.note))
             colors.append(_STATUS_COLORS.get(item.status))
         widgets.set_table_rows("batch_table", rows, colors)
         finished = sum(1 for i in items if i.status in ("done", "failed", "stopped"))

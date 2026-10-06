@@ -196,6 +196,9 @@ def _cmd_track(args) -> int:
 
     run = detect_and_track(source, detector, config, detector_settings=det_config.to_dict(),
                            on_frame=progress)
+    if run.info.fps_note:
+        print(f"[yoru-tracker] note: {source.name}: {run.info.fps_note} "
+              f"({run.info.fps:.3f} fps)", file=sys.stderr)
     written = export_run(run, out_dir, include_predicted=args.include_predicted)
     if args.render:
         written["video"] = render_video(run, output_paths(out_dir, source.stem)["video"])
@@ -221,8 +224,9 @@ def _cmd_batch(args) -> int:
 
     def report(item):
         if item.status in ("done", "failed", "stopped"):
+            message = item.error or (f"note: {item.note}" if item.note else "")
             print(f"[{item.status:>7}] {item.name}  frames={item.frames} ids={item.track_ids}"
-                  + (f"  {item.error}" if item.error else ""), flush=True)
+                  + (f"  {message}" if message else ""), flush=True)
 
     items = run_batch([BatchItem(v) for v in videos], detector, config, args.out,
                       detector_settings=det_config.to_dict(),

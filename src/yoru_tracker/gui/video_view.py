@@ -236,7 +236,7 @@ class VideoView:
         dpg.configure_item("video_slider", max_value=max(0, info.frame_count - 1))
         dpg.set_value("video_status",
                       f"{Path(path).name}: {info.frame_count} frames, {info.width}x{info.height}, "
-                      f"{info.fps:.2f} fps")
+                      f"{info.fps:.2f} fps" + (f" ({info.fps_note})" if info.fps_note else ""))
         dpg.set_value("video_progress", 0.0)
         dpg.configure_item("video_progress", overlay="")
         dpg.set_value("video_retrack_note", "")

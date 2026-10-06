@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import time
 
+import cv2
 import numpy as np
 import pytest
 
@@ -39,7 +40,7 @@ from yoru_tracker.runtime.video import (
     retrack,
 )
 
-from conftest import BlobDetector, det, read_all, write_video
+from conftest import BlobDetector, capture_hiding, det, read_all, write_video
 
 
 def _csv_rows(path):
@@ -66,6 +67,28 @@ def test_a_seek_that_lands_elsewhere_is_corrected_by_the_frame_times(tmp_path, l
         assert np.array_equal(source.frame_at(10), frames[13])
         for target in (10, 90, 0, 119, 60, 61, 70):
             assert np.array_equal(source.frame_at(target, times), frames[target]), target
+
+
+@pytest.mark.parametrize("hidden, fps, fps_source", [
+    ((cv2.CAP_PROP_FPS,), 20.0, "timestamps"),
+    ((cv2.CAP_PROP_FPS, cv2.CAP_PROP_POS_MSEC), 30.0, "assumed"),
+])
+def test_a_video_that_states_no_frame_rate_says_so(tmp_path, monkeypatch, hidden, fps,
+                                                    fps_source):
+    path = write_video(tmp_path / "v.avi", frames=40, fps=20.0)
+    frames, _ = read_all(path)
+    monkeypatch.setattr(cv2, "VideoCapture", capture_hiding(*hidden))
+    with VideoFileSource(path) as source:
+        assert source.info.fps == pytest.approx(fps)
+        assert source.info.fps_source == fps_source and source.info.fps_note
+        _, first = source.read()
+        assert np.array_equal(first, frames[0])          # measuring left the start alone
+    run = detect_and_track(path, BlobDetector(), TrackerConfig())
+    meta = read_metadata(export_run(run, tmp_path / "out")["metadata"])
+    assert (meta["source"]["fps"], meta["source"]["fps_source"]) == (pytest.approx(fps),
+                                                                     fps_source)
+    item, = run_batch([BatchItem(str(path))], BlobDetector(), TrackerConfig(), tmp_path / "b")
+    assert item.status == "done" and item.note == run.info.fps_note
 
 
 def test_the_tracking_pass_records_every_frames_time(video_file, blob_detector):

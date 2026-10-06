@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import bisect
+import logging
 import math
 import time
 from dataclasses import dataclass
@@ -14,7 +15,13 @@ from typing import Optional, Sequence, Tuple
 
 import cv2
 
+logger = logging.getLogger(__name__)
+
 VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".wmv", ".m4v", ".mpg", ".mpeg")
+
+#: Frame rate taken for a file that states none and whose frames carry no
+#: usable times either -- so that times are on some scale, and said to be.
+ASSUMED_FPS = 30.0
 
 #: A frame at most this far ahead is reached by reading on, which is exact,
 #: rather than by seeking, which decodes from a keyframe before it anyway.
@@ -56,6 +63,21 @@ class VideoInfo:
     frame_count: int
     width: int
     height: int
+    #: Where *fps* came from: ``"file"``, the rate the file states;
+    #: ``"timestamps"``, measured from its first frames' presentation times
+    #: when it states none; ``"assumed"``, :data:`ASSUMED_FPS` when it has
+    #: neither -- every time in seconds then rests on that guess.
+    fps_source: str = "file"
+
+    @property
+    def fps_note(self) -> str:
+        """What a user should know about *fps*; empty when the file stated it."""
+        if self.fps_source == "timestamps":
+            return "the file states no frame rate; measured from its timestamps"
+        if self.fps_source == "assumed":
+            return (f"the file states no frame rate and has no timestamps; "
+                    f"{ASSUMED_FPS:g} fps assumed, so times in seconds are a guess")
+        return ""
 
 
 class VideoFileSource:
@@ -75,15 +97,34 @@ class VideoFileSource:
             raise RuntimeError(f"Could not open video: {self.path}")
         self.v_flip = v_flip
         self.h_flip = h_flip
-        fps = self._cap.get(cv2.CAP_PROP_FPS) or 0.0
+        self._next = 0
+        fps, fps_source = self._cap.get(cv2.CAP_PROP_FPS) or 0.0, "file"
+        if not (math.isfinite(fps) and fps > 0):
+            measured = self._fps_from_times()
+            fps, fps_source = (measured, "timestamps") if measured else (ASSUMED_FPS, "assumed")
         self.info = VideoInfo(
             path=self.path,
-            fps=fps if fps > 0 else 30.0,
+            fps=fps,
             frame_count=int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0),
             width=int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0),
             height=int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0),
+            fps_source=fps_source,
         )
-        self._next = 0
+        if fps_source != "file":
+            logger.warning("%s: %s (%.3f fps)", self.path, self.info.fps_note, fps)
+
+    def _fps_from_times(self, frames: int = 25) -> Optional[float]:
+        """The frame rate the first frames' presentation times show, if any."""
+        times = []
+        while len(times) < frames and self._cap.grab():
+            ms = self._cap.get(cv2.CAP_PROP_POS_MSEC)
+            if ms is None or not math.isfinite(ms):
+                break
+            times.append(ms)
+        self._reopen()                  # back at frame 0, exactly
+        steps = sorted(b - a for a, b in zip(times, times[1:]))
+        step = steps[len(steps) // 2] if steps else 0.0   # the median: robust to a stray one
+        return 1000.0 / step if step > 0 else None
 
     def read(self) -> Tuple[Optional[int], Optional[object]]:
         """``(index, frame)``, or ``(None, None)`` at the end."""

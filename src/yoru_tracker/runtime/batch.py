@@ -39,6 +39,8 @@ class BatchItem:
     track_ids: int = 0
     error: str = ""
     detail: str = ""
+    #: What to know about a file that did not fail -- its frame rate was guessed.
+    note: str = ""
     outputs: dict = field(default_factory=dict)
 
     @property
@@ -123,6 +125,7 @@ def run_batch(
                 include_predicted=include_predicted).items()}
             item.frames = run.processed
             item.track_ids = len(run.track_ids())
+            item.note = run.info.fps_note
             item.status = "done" if run.complete else "stopped"
         except Exception as exc:
             item.status = "failed"

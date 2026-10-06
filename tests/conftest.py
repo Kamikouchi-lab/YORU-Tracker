@@ -98,6 +98,22 @@ def late_seeks(monkeypatch):
     monkeypatch.setattr(cv2, "VideoCapture", LateSeeks)
 
 
+def capture_hiding(*props):
+    """A ``cv2.VideoCapture`` class whose files state nothing for *props* (it reads 0)."""
+
+    class Capture:
+        def __init__(self, path):
+            self._cap = _REAL_CAPTURE(path)
+
+        def get(self, prop):
+            return 0.0 if prop in props else self._cap.get(prop)
+
+        def __getattr__(self, name):
+            return getattr(self._cap, name)
+
+    return Capture
+
+
 def read_all(path):
     """Every frame of *path* read in order, and the time the file gives each."""
     from yoru_tracker.runtime.sources import VideoFileSource
