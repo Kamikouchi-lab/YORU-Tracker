@@ -128,6 +128,14 @@ def test_yoru_realtime_detect_csv_drops_repeated_results(tmp_path):
     assert [(f.frame_id, len(f.detections)) for f in frames] == [(1, 2), (3, 1)]
 
 
+def test_a_byte_order_mark_from_a_spreadsheet_is_skipped(tmp_path):
+    frames = [FrameDetections(0, 0.0, (det(1, 2),)), FrameDetections(1, 0.5, ())]
+    write_detections_csv(tmp_path / "d.csv", frames)
+    text = (tmp_path / "d.csv").read_text(encoding="utf-8")
+    (tmp_path / "saved.csv").write_text(text, encoding="utf-8-sig")
+    assert load_detections(tmp_path / "saved.csv") == ("yoru-tracker", frames)
+
+
 def test_unknown_csv_is_refused(tmp_path):
     path = tmp_path / "x.csv"
     path.write_text("a,b,c\n1,2,3\n")

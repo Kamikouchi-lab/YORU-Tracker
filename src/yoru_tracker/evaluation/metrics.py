@@ -87,7 +87,11 @@ class TrackingMetrics:
 
 def _pair(gt: Sequence[Entry], pred: Sequence[Entry], keep: Mapping[int, int],
           limit: float) -> List[Tuple[int, int]]:
-    """Index pairs ``(gt_index, pred_index)`` for one frame."""
+    """Index pairs ``(gt_index, pred_index)`` for one frame.
+
+    *keep* maps a ground-truth ID to the output ID it is still paired with;
+    no output ID may appear in it twice.
+    """
     pairs = []
     used_g, used_p = set(), set()
     pred_index = {p[0]: j for j, p in enumerate(pred)}
@@ -115,6 +119,7 @@ def evaluate(gt_frames: Mapping[int, Sequence[Entry]],
              match_distance: float) -> TrackingMetrics:
     frame_ids = sorted(set(gt_frames) | set(pred_frames))
     last_pred_of: Dict[int, int] = {}      # gt id -> output id last matched
+    last_gt_of: Dict[int, int] = {}        # output id -> gt id last matched
     was_matched: Dict[int, bool] = {}       # gt id -> matched in its last present frame
     seen_pred = set()
     runs: Dict[int, List[List[int]]] = {}  # gt id -> [[pred id, first frame, last frame]]
@@ -144,7 +149,10 @@ def evaluate(gt_frames: Mapping[int, Sequence[Entry]],
                     key = (g[0], p[0])
                     pair_frames[key] = pair_frames.get(key, 0) + 1
 
-        pairs = _pair(gt, pred, last_pred_of, match_distance)
+        # A pairing is kept only while it is the latest for both sides: once an
+        # output has moved to another animal, the first one cannot claim it too.
+        keep = {g: p for g, p in last_pred_of.items() if last_gt_of.get(p) == g}
+        pairs = _pair(gt, pred, keep, match_distance)
         matched_gt = set()
         for i, j in pairs:
             gid, pid = gt[i][0], pred[j][0]
@@ -161,6 +169,7 @@ def evaluate(gt_frames: Mapping[int, Sequence[Entry]],
                 if previous == pid:
                     rec += 1
             last_pred_of[gid] = pid
+            last_gt_of[pid] = gid
             gid_runs = runs.setdefault(gid, [])
             if gid_runs and gid_runs[-1][0] == pid:
                 gid_runs[-1][2] = fid

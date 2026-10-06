@@ -59,6 +59,9 @@ def test_a_misspelt_key_is_an_error_not_a_silent_default():
     ("tracker:\n  lifecycle:\n    population: -1\n", "population must be >= 0"),
     ("tracker:\n  association:\n    min_iou: 1.5\n", "min_iou"),
     ("tracker:\n  association:\n    distance_weight: 0\n    iou_weight: 0\n", "must be positive"),
+    ("tracker:\n  association:\n    max_distance: .nan\n", "max_distance must be a finite number"),
+    ("tracker:\n  association:\n    distance_weight: .inf\n", "distance_weight must be a finite"),
+    ("tracker:\n  kalman:\n    process_noise: .nan\n", "process_noise must be a finite"),
 ])
 def test_invalid_values_are_named(yaml_text, fragment):
     with pytest.raises(ConfigError, match=fragment.replace(".", r"\.")):

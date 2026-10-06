@@ -213,8 +213,10 @@ class VideoView:
             self.open_video(path)
 
     def open_video(self, path: str) -> None:
-        if self.job is not None and self.job.running:
-            self.app.report_error("A video is being tracked", RuntimeError("Stop it first."))
+        if self._busy():
+            # A re-track or load finishing later would hang its results on
+            # whatever video is open by then.
+            self._report_busy()
             return
         try:
             source = VideoFileSource(path, v_flip=dpg.get_value("video_vflip"),
@@ -248,12 +250,19 @@ class VideoView:
 
     def _flips_changed(self) -> None:
         path = dpg.get_value("video_path")
-        if path:
-            had_results = self.run is not None
-            self.open_video(path)
-            if had_results:
-                dpg.set_value("video_status", "Flip changed: the previous results no longer "
-                                              "match the frames and were cleared.")
+        if not path:
+            return
+        if self._busy():
+            # The open video keeps its flips; the boxes must keep showing them.
+            dpg.set_value("video_vflip", self.source.v_flip)
+            dpg.set_value("video_hflip", self.source.h_flip)
+            self._report_busy()
+            return
+        had_results = self.run is not None
+        self.open_video(path)
+        if had_results:
+            dpg.set_value("video_status", "Flip changed: the previous results no longer "
+                                          "match the frames and were cleared.")
 
     # ------------------------------------------------------------------
     # Tracking
@@ -269,12 +278,13 @@ class VideoView:
         if not detector_config.model_path:
             self.app.report_error("No detector model selected", ValueError("Select a model first."))
             return
-        if self.job is not None and self.job.running:
+        if self._busy():
             return
+        load, settings = self.state.detector_loader()
         self.job = VideoJob(
-            self.source.path, self.state.load_detector, self.state.tracker_config,
+            self.source.path, load, self.state.tracker_config,
             v_flip=self.source.v_flip, h_flip=self.source.h_flip,
-            detector_settings=detector_config.to_dict(),
+            detector_settings=settings,
         )
         self.run = self.job.run
         self._job_reported = False
@@ -324,20 +334,26 @@ class VideoView:
 
         def work():
             from yoru_tracker.core.registry import create_tracker
-            from yoru_tracker.runtime.detections_file import load_detections
+            from yoru_tracker.runtime.detections_file import (
+                align_to_video,
+                load_detections,
+                realtime_log_path,
+            )
             from yoru_tracker.runtime.frames import track_frames
             from yoru_tracker.runtime.video import RunStats, VideoTracking
 
             layout, frames = load_detections(path)
+            if layout == "yoru-realtime" and realtime_log_path(path) is None:
+                raise ValueError(
+                    f"{Path(path).name} is a YORU real-time detections file without its "
+                    f"*_log.csv beside it; only the log says which video frame each "
+                    f"detection belongs to.")
             if frames and info.frame_count and frames[-1].frame_id >= info.frame_count:
                 raise ValueError(
                     f"{Path(path).name} has detections up to frame {frames[-1].frame_id}, "
                     f"but the video has {info.frame_count} frames: it belongs to another video.")
             # Frames must line up with the video's: frame i at index i.
-            by_id = {f.frame_id: f for f in frames}
-            last = frames[-1].frame_id if frames else -1
-            from yoru_tracker.runtime.frames import FrameDetections
-            aligned = [by_id.get(i, FrameDetections(i, i / info.fps, ())) for i in range(last + 1)]
+            aligned = align_to_video(layout, frames, info.fps)
             tracker = create_tracker(config)
             t0 = time.perf_counter()
             results = track_frames(tracker, aligned)
@@ -387,6 +403,11 @@ class VideoView:
 
     def _busy(self) -> bool:
         return (self._task is not None) or (self.job is not None and self.job.running)
+
+    def _report_busy(self) -> None:
+        what = self._task_label if self._task is not None else "tracking"
+        self.app.report_error("The current video is still in use", RuntimeError(
+            f"Wait for {what} to finish, or stop it, first."))
 
     def _start_task(self, label, fn, on_done) -> None:
         self._task = widgets.BackgroundTask(label, fn)
@@ -534,22 +555,29 @@ class VideoView:
         image = frame.copy()
         run = self.run
         result = None
+        shown = None
         if run is not None and self.index < run.processed:
-            result = run.results[self.index]
+            # On a frame the detector never ran on, the latest result before it.
+            shown = run.shown_index(self.index)
+        if shown is not None:
+            result = run.results[shown]
             options = self.overlay_options()
-            trails = (trails_from_results(run.results, self.index, options.trail_length)
+            trails = (trails_from_results(run.results, shown, options.trail_length)
                       if options.trajectories else None)
             draw_tracking(image, result, options, trails=trails,
-                          detections=run.frames[self.index].detections)
+                          detections=run.frames[shown].detections)
         dpg.set_value(TEXTURE, widgets.texture_data(widgets.letterbox(image, TEX_W, TEX_H)))
         label = f"Frame {self.index + 1}/{info.frame_count}   t = {self.index / info.fps:.2f} s"
         if result is not None:
             label += (f"   active {len(result.active_ids)}   lost {len(result.lost_ids)}")
+            if shown != self.index:
+                label += f"   (not detected; tracks of frame {shown + 1})"
         elif run is not None:
-            label += "   (not tracked yet)"
+            label += ("   (not detected)" if self.index < run.processed
+                      else "   (not tracked yet)")
         dpg.set_value("video_frame_label", label)
         self.table.show(result)
-        self.events.show(result.events if result is not None else ())
+        self.events.show(result.events if result is not None and shown == self.index else ())
 
     def shutdown(self) -> None:
         if self.job is not None:

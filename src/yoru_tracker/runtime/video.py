@@ -77,6 +77,18 @@ class VideoTracking:
     def track_ids(self) -> List[int]:
         return sorted({t.track_id for r in self.results for t in r.tracked})
 
+    def shown_index(self, index: int) -> Optional[int]:
+        """Which result to show on video frame *index*.
+
+        Its own -- or, on a frame the detector never ran on, the latest one
+        before it, as a live display was showing then.  ``None`` before the
+        first observed frame.
+        """
+        for i in range(min(index, self.processed - 1), -1, -1):
+            if self.frames[i].observed:
+                return i
+        return None
+
     def summary(self) -> Dict:
         return {
             "frames": self.processed,
@@ -217,15 +229,19 @@ def render_video(run: VideoTracking, out_path, options: OverlayOptions = Overlay
         raise RuntimeError(f"Could not open video writer for {out_path}")
     try:
         with VideoFileSource(info.path, v_flip=v_flip, h_flip=h_flip) as source:
+            shown = None  # run.shown_index(i), kept up as we go
             for i in range(run.processed):
                 if should_stop is not None and should_stop():
                     break
                 _, image = source.read()
                 if image is None:
                     break
-                trails = trails_from_results(run.results, i, options.trail_length)
-                draw_tracking(image, run.results[i], options, trails=trails,
-                              detections=run.frames[i].detections)
+                if run.frames[i].observed:
+                    shown = i
+                if shown is not None:
+                    trails = trails_from_results(run.results, shown, options.trail_length)
+                    draw_tracking(image, run.results[shown], options, trails=trails,
+                                  detections=run.frames[shown].detections)
                 writer.write(image)
     finally:
         writer.release()

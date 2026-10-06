@@ -15,7 +15,7 @@ import json
 import logging
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 from yoru_tracker.core.config import ConfigError, TrackerConfig
 from yoru_tracker.runtime.detection import DetectorConfig, YoruDetector
@@ -60,8 +60,15 @@ class AppState:
     def set_detector(self, **changes) -> None:
         self.detector = replace(self.detector, **changes)
 
-    def load_detector(self) -> YoruDetector:
-        return YoruDetector.load(self.detector)
+    def detector_loader(self) -> Tuple[Callable[[], YoruDetector], dict]:
+        """``(load, settings)`` for a worker thread, both fixed now.
+
+        The worker loads the model later; reading the settings only then would
+        let a threshold changed in the meantime run the detector with values
+        other than the ones written into the result's metadata.
+        """
+        config = self.detector
+        return (lambda: YoruDetector.load(config)), config.to_dict()
 
     # -- persistence ----------------------------------------------------
 
@@ -92,6 +99,9 @@ class AppState:
             return state
         except (OSError, ValueError) as exc:
             logger.warning("GUI state %s unreadable, using defaults: %s", path, exc)
+            return state
+        if not isinstance(data, dict):
+            logger.warning("GUI state %s is not a JSON object, using defaults", path)
             return state
         try:
             state.tracker_config = TrackerConfig.from_dict(data.get("tracker_config", {}))

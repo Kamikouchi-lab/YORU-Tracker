@@ -61,6 +61,13 @@ def test_a_video_without_a_model_is_refused(tmp_path):
         main(["track", str(tmp_path / "movie.mp4")])
 
 
+def test_render_with_a_detections_csv_is_refused_not_ignored(tmp_path):
+    write_detections_csv(tmp_path / "d.csv", [FrameDetections(0, 0.0, (det(1, 1),))])
+    with pytest.raises(SystemExit, match="--render"):
+        main(["track", str(tmp_path / "d.csv"), "--render"])
+    assert not (tmp_path / "d_tracks.csv").exists()
+
+
 def test_bench_runs(capsys, tmp_path):
     assert main(["bench", "--scenario", "single", "--json", str(tmp_path / "b.json")]) == 0
     out = capsys.readouterr().out

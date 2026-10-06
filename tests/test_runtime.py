@@ -12,14 +12,39 @@ import time
 import numpy as np
 import pytest
 
-from yoru_tracker.core import TrackerConfig, create_tracker
-from yoru_tracker.runtime.batch import BatchItem, failure_report, find_videos, run_batch
-from yoru_tracker.runtime.detections_file import load_detections
+from yoru.libs.detector_base import DETECTION_COLUMNS, detection_row
+
+from yoru_tracker.core import TrackerConfig, TrackerUnavailableError, create_tracker
+from yoru_tracker.export import config_from_metadata, read_metadata
+from yoru_tracker.runtime.batch import (
+    BatchItem,
+    failure_report,
+    find_videos,
+    output_names,
+    run_batch,
+)
+from yoru_tracker.runtime.detections_file import (
+    align_to_video,
+    load_detections,
+    write_detections_csv,
+)
 from yoru_tracker.runtime.frames import FrameDetections, track_frames
 from yoru_tracker.runtime.realtime import RealtimeTracking
-from yoru_tracker.runtime.video import detect_and_track, export_run, render_video, retrack
+from yoru_tracker.runtime.sources import VideoInfo
+from yoru_tracker.runtime.video import (
+    VideoTracking,
+    detect_and_track,
+    export_run,
+    render_video,
+    retrack,
+)
 
 from conftest import BlobDetector, det, write_video
+
+
+def _csv_rows(path):
+    with open(path, newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
 
 
 # -- video ---------------------------------------------------------------------
@@ -74,6 +99,70 @@ def test_render_writes_a_video(tmp_path, video_file, blob_detector):
     cap.release()
 
 
+# -- stored detections over their video ----------------------------------------
+
+def _yoru_realtime_recording(tmp_path, every=2, first=1, n=60):
+    """A YORU real-time recording whose detector took every *every*-th frame.
+
+    YORU writes the latest detections again with every video frame until the
+    next ones are ready, stamped with the capture time of the frame they came
+    from; the log maps each video frame to its capture time.
+    """
+    paths = [lambda t: (20 + 3 * t, 35), lambda t: (300 - 3 * t, 85)]
+    detect, log = tmp_path / "rec_detect.csv", tmp_path / "rec_log.csv"
+    with open(detect, "w", newline="") as fd, open(log, "w", newline="") as fl:
+        dw, lw = csv.writer(fd), csv.writer(fl)
+        dw.writerow(DETECTION_COLUMNS)
+        lw.writerow(["frame", "total_time"])
+        rows = []
+        for i in range(n):
+            t = i / 30.0
+            if i >= first and (i - first) % every == 0:
+                rows = []
+                for path in paths:
+                    d = det(*path(i))
+                    rows.append(detection_row({"x1": d.x1, "y1": d.y1, "x2": d.x2, "y2": d.y2,
+                                               "conf": 0.9, "class_id": 0, "class_name": "fly"},
+                                              t))
+            lw.writerow([i, t])
+            dw.writerows(rows)
+    return detect
+
+
+def test_a_yoru_realtime_recording_lined_up_with_its_video_tracks_as_the_file_does(tmp_path):
+    layout, frames = load_detections(_yoru_realtime_recording(tmp_path))
+    assert layout == "yoru-realtime" and [f.frame_id for f in frames[:3]] == [1, 3, 5]
+    direct = track_frames(create_tracker(), frames)
+    aligned = align_to_video(layout, frames, 30.0)
+    assert [f.frame_id for f in aligned] == list(range(frames[-1].frame_id + 1))
+    # Frames the detector never ran on are not empty frames: nothing was missed.
+    assert [f.observed for f in aligned[:4]] == [False, True, False, True]
+    results = track_frames(create_tracker(), aligned)
+    assert [r for r, f in zip(results, aligned) if f.observed] == direct
+    assert {t.track_id for r in results for t in r.tracked} == {0, 1}
+    assert not any(e.kind.value == "lost" for r in results for e in r.events)
+
+
+def test_in_yoru_analysis_tables_a_missing_frame_had_no_detections():
+    frames = [FrameDetections(2, None, (det(10, 10),))]
+    assert [f.observed for f in align_to_video("yoru-analysis", frames, 30.0)] == [True] * 3
+    assert [f.observed for f in align_to_video("yoru-tracker", frames, 30.0)] == [False, False, True]
+
+
+def test_unobserved_frames_stay_gaps_through_export_and_display(tmp_path):
+    frames = [FrameDetections(0, 0.0, (det(10, 10),)),
+              FrameDetections(1, 1 / 30, (), observed=False),
+              FrameDetections(2, 2 / 30, (det(14, 10),))]
+    results = track_frames(create_tracker(), frames)
+    assert results[1].tracked == () and results[2].tracked[0].association_cost is not None
+    write_detections_csv(tmp_path / "d.csv", frames)
+    _, loaded = load_detections(tmp_path / "d.csv")
+    assert [f.frame_id for f in loaded] == [0, 2]          # still a gap, not an empty frame
+    run = VideoTracking(VideoInfo("v.avi", 30.0, 3, 64, 48), TrackerConfig(),
+                        frames=frames, results=results)
+    assert [run.shown_index(i) for i in range(3)] == [0, 0, 2]
+
+
 # -- batch ---------------------------------------------------------------------
 
 def test_batch_reports_failures_and_carries_on(tmp_path):
@@ -95,6 +184,31 @@ def test_batch_reports_failures_and_carries_on(tmp_path):
     assert "1 file(s) failed" in report and "broken.mp4" in report
     assert (tmp_path / "out" / "a_tracks.csv").is_file()
     assert ("a.avi", "running") in seen
+
+
+def test_output_names_never_collide(tmp_path):
+    root = tmp_path / "videos"
+    names = output_names([str(root / "day1" / "fly.avi"), str(root / "day2" / "fly.avi"),
+                          str(root / "day2" / "fly.mp4"), str(root / "day2" / "other.avi")])
+    assert [n.as_posix() for n in names] == ["day1/fly", "day2/fly_avi", "day2/fly_mp4",
+                                             "day2/other"]
+    # A flat folder keeps the plain names.
+    assert [n.as_posix() for n in output_names([str(root / "a.avi"), str(root / "b.avi")])] == [
+        "a", "b"]
+
+
+def test_batch_videos_with_one_name_do_not_overwrite_each_other(tmp_path):
+    folder = tmp_path / "videos"
+    for sub, frames in (("day1", 15), ("day2", 12)):
+        (folder / sub).mkdir(parents=True)
+        write_video(folder / sub / "fly.avi", frames=frames)
+    items = run_batch([BatchItem(v) for v in find_videos(folder, recursive=True)],
+                      BlobDetector(), TrackerConfig(), tmp_path / "out")
+    assert [i.status for i in items] == ["done", "done"]
+    out = {i.outputs["tracks_csv"] for i in items}
+    assert len(out) == 2
+    frames = sorted(len({r["frame_id"] for r in _csv_rows(p)}) for p in out)
+    assert frames == [12, 15]
 
 
 # -- live ----------------------------------------------------------------------
@@ -216,6 +330,85 @@ def test_live_recording_writes_csv_and_metadata(tmp_path):
     assert rows and {r["track_id"] for r in rows} <= {"0", "1"}
     meta = (tmp_path / "live_tracks.json").read_text(encoding="utf-8")
     assert '"kind": "live"' in meta and "test source" in meta
+
+
+def _wait_for(snapshots, n, rt, timeout=10.0):
+    deadline = time.time() + timeout
+    while len(snapshots) < n and rt.running and time.time() < deadline:
+        time.sleep(0.01)
+
+
+def test_a_reset_while_recording_continues_in_a_new_file(tmp_path):
+    script = [(det(10, 10), det(300, 200))] * 1000
+    snapshots = []
+    rt = RealtimeTracking(lambda: CountingSource(1000, interval=0.002),
+                          lambda: ScriptedDetector(script), TrackerConfig(),
+                          on_result=snapshots.append)
+    rt.start()
+    _wait_for(snapshots, 5, rt)
+    rt.start_recording(tmp_path / "live_tracks.csv")
+    _wait_for(snapshots, 25, rt)
+    rt.reset_tracker(TrackerConfig.from_yaml("tracker:\n  lifecycle:\n    max_age: 3\n"))
+    seen = len(snapshots)
+    _wait_for(snapshots, seen + 20, rt)
+    rt.stop()
+    assert rt.error is None
+    first, second = tmp_path / "live_tracks.csv", tmp_path / "live_part2_tracks.csv"
+    before = [int(r["frame_id"]) for r in _csv_rows(first)]
+    after = [int(r["frame_id"]) for r in _csv_rows(second)]
+    assert before and after and max(before) < min(after)
+    # Each file says which settings its IDs came from.
+    assert config_from_metadata(read_metadata(first.with_suffix(".json"))) == TrackerConfig()
+    assert config_from_metadata(
+        read_metadata(second.with_suffix(".json"))).lifecycle.max_age == 3
+
+
+def test_settings_that_cannot_run_live_are_refused_and_the_run_goes_on():
+    script = [(det(10, 10),)] * 1000
+    snapshots = []
+    rt = RealtimeTracking(lambda: CountingSource(1000, interval=0.002),
+                          lambda: ScriptedDetector(script), TrackerConfig(),
+                          on_result=snapshots.append)
+    rt.start()
+    _wait_for(snapshots, 5, rt)
+    with pytest.raises(TrackerUnavailableError):
+        rt.reset_tracker(TrackerConfig(mode="advanced"))
+    seen = len(snapshots)
+    _wait_for(snapshots, seen + 5, rt)
+    rt.stop()
+    assert rt.error is None and len(snapshots) >= seen + 5
+    assert {s.generation for s in snapshots} == {0}
+
+
+def test_a_tracker_that_is_not_realtime_capable_is_refused_live(monkeypatch):
+    import dataclasses
+
+    from yoru_tracker.tracking.lite_tracker import LiteTracker
+
+    monkeypatch.setattr(LiteTracker, "info",
+                        dataclasses.replace(LiteTracker.info, realtime_capable=False))
+    with pytest.raises(ValueError, match="realtime"):
+        RealtimeTracking(lambda: CountingSource(), lambda: ScriptedDetector([]), TrackerConfig())
+
+
+def test_a_stopped_pipeline_starts_again_from_id_zero():
+    script = [(det(10, 10),)] * 2000
+    source = CountingSource(2000, interval=0.002)
+    snapshots = []
+    rt = RealtimeTracking(lambda: source, lambda: ScriptedDetector(script), TrackerConfig(),
+                          on_result=snapshots.append)
+    rt.start()
+    _wait_for(snapshots, 10, rt)
+    rt.stop()
+    first_run = len(snapshots)
+    rt.start()
+    _wait_for(snapshots, first_run + 10, rt)
+    rt.stop()
+    assert rt.error is None
+    again = snapshots[first_run:]
+    assert again and {s.generation for s in again} == {1}
+    assert again[0].result.events[0].kind.value == "reset"
+    assert [t.track_id for t in again[-1].result.tracked] == [0]
 
 
 def test_a_failing_detector_stops_the_pipeline_with_its_error():

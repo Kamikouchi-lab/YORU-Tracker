@@ -157,6 +157,10 @@ def _cmd_track(args) -> int:
     if source.suffix.lower() == ".csv":
         from yoru_tracker.runtime.detections_file import load_detections
 
+        if args.render:
+            raise SystemExit("--render needs the video itself; a detections CSV has no frames "
+                             "to draw on. Track the video (track VIDEO --model ... --render), "
+                             "or load the CSV over the video in the GUI.")
         layout, frames = load_detections(source)
         tracker = create_tracker(config)
         results = track_frames(tracker, frames)

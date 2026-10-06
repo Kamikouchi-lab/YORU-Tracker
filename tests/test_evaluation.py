@@ -62,6 +62,18 @@ def test_same_id_after_a_gap_is_a_recovery():
     assert (m.fragmentations, m.recoveries, m.id_switches) == (1, 1, 0)
 
 
+def test_one_output_is_never_matched_to_two_animals():
+    # Output 5 follows animal 1, then animal 2; then both stand next to it.
+    gt = {0: [(1, 0.0, 0.0), (2, 100.0, 0.0)],
+          1: [(1, 500.0, 500.0), (2, 0.0, 0.0)],
+          2: [(1, 1.0, 0.0), (2, -1.0, 0.0)]}
+    pred = {0: [(5, 0.0, 0.0), (6, 100.0, 0.0)],
+            1: [(5, 0.0, 0.0)],
+            2: [(5, 0.0, 0.0)]}
+    m = evaluate(gt, pred, 20.0)
+    assert m.matches == 4 and m.false_positives == 0 and m.misses == 2
+
+
 def test_false_positives_and_misses():
     gt = {0: [(1, 0.0, 0.0)], 1: [(1, 1.0, 0.0)]}
     pred = {0: [(1, 0.0, 0.0), (2, 90.0, 90.0)], 1: []}

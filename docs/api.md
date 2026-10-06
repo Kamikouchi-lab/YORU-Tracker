@@ -34,8 +34,8 @@ class TrackerBase:
   longer motion step. `timestamp` is carried into the result untouched.
   `frame` is the image, for trackers whose `info.requires_frame` is true; Lite
   ignores it.
-* **`reset`** drops every track; IDs restart at 0. The first result after a
-  reset carries a `reset` event.
+* **`reset`** drops every track; IDs restart at 0. If there was any track to
+  drop, the first result after the reset carries a `reset` event.
 * **Determinism.** Given the same detections, frame IDs, timestamps and
   configuration, a tracker whose `info.deterministic` is true returns equal
   results — `==` on `TrackingResult`. Realtime, video and stored-detection
@@ -125,9 +125,10 @@ tracker:
   log_events: false
 ```
 
-Unknown keys, wrong types, out-of-range values, an unsupported
-`config_version`, and `advanced.*` options on a mode other than `advanced` are
-all `ConfigError`s, whose `problems` list every reason at once. A file may give
+Unknown keys, wrong types, out-of-range values, non-finite numbers (`.nan`,
+`.inf`), an unsupported `config_version`, and `advanced.*` options on a mode
+other than `advanced` are all `ConfigError`s, whose `problems` list every
+reason at once. A file may give
 only some keys; the rest take their defaults.
 
 `config_version` changes when a key is renamed or changes meaning;

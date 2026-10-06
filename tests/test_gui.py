@@ -11,6 +11,7 @@ import dataclasses
 import os
 import subprocess
 import sys
+import threading
 
 import dearpygui.dearpygui as dpg
 import pytest
@@ -100,6 +101,44 @@ def test_a_corrupt_state_file_falls_back_to_defaults(tmp_path):
     path = tmp_path / "state.json"
     path.write_text("{not json")
     assert AppState.load(path).tracker_config == TrackerConfig()
+
+
+@pytest.mark.parametrize("text", ["null", "[]", "3"])
+def test_a_state_file_that_is_not_an_object_falls_back_to_defaults(tmp_path, text):
+    path = tmp_path / "state.json"
+    path.write_text(text)
+    assert AppState.load(path).tracker_config == TrackerConfig()
+
+
+def test_detector_settings_are_fixed_when_a_run_starts():
+    state = AppState()
+    state.set_detector(model_path="model.pt", conf_thresh=0.4)
+    _load, settings = state.detector_loader()
+    state.set_detector(conf_thresh=0.7)       # changed while the model loads
+    assert settings["conf_thresh"] == 0.4
+
+
+def test_the_open_video_is_kept_while_it_is_busy(app, video_file, tmp_path):
+    from conftest import write_video
+
+    app.show_view("video")
+    app.video.open_video(str(video_file))
+    errors = []
+    app.report_error = lambda context, exc: errors.append(context)
+    gate = threading.Event()
+    app.video._start_task("re-track", gate.wait, lambda result: None)
+    try:
+        app.video.open_video(str(write_video(tmp_path / "other.avi", frames=5)))
+        assert dpg.get_value("video_path") == str(video_file)
+        dpg.set_value("video_vflip", True)
+        app.video._flips_changed()
+        assert dpg.get_value("video_vflip") is False and not app.video.source.v_flip
+        assert len(errors) == 2
+    finally:
+        gate.set()
+        app.video._task.join(timeout=5)
+    app.tick()
+    assert app.video._task is None
 
 
 @pytest.mark.gui

@@ -14,7 +14,8 @@ Three layouts are read, told apart by their header:
     Written by :func:`write_detections_csv`: ``frame_id`` followed by YORU's
     ``DETECTION_COLUMNS`` (``total_time`` holding the timestamp).  A frame in
     which nothing was detected is a row with only ``frame_id`` and
-    ``total_time`` filled in, so the tracker sees every frame it saw before.
+    ``total_time`` filled in, so the tracker sees every frame it saw before;
+    a frame it never saw has no row at all.
 
 ``yoru-analysis``
     YORU's video-analysis table (``frame, x1, ..., x_center, y_center, w, h,
@@ -29,6 +30,9 @@ Three layouts are read, told apart by their header:
     distinct capture time becomes one frame.  With the matching ``*_log.csv``
     beside it, frame IDs are the recorded video's frame numbers.  Frames on
     which the detector found nothing cannot be recovered from this file.
+
+Files saved from a spreadsheet often start with a byte-order mark; it is
+skipped.
 """
 
 from __future__ import annotations
@@ -36,7 +40,7 @@ from __future__ import annotations
 import csv
 import math
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 from yoru.libs.detector_base import DETECTION_COLUMNS
 
@@ -49,7 +53,11 @@ _ANALYSIS_PREFIX = ("frame", "x1", "y1", "x2", "y2", "x_center", "y_center")
 
 
 def write_detections_csv(path, frames: Iterable[FrameDetections]) -> int:
-    """Write *frames* in the ``yoru-tracker`` layout; returns the frame count."""
+    """Write *frames* in the ``yoru-tracker`` layout; returns the frame count.
+
+    Unobserved frames are left out, so read back they are again gaps the
+    tracker steps over, not empty frames in which every animal was missed.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     count = 0
@@ -59,6 +67,8 @@ def write_detections_csv(path, frames: Iterable[FrameDetections]) -> int:
         writer = csv.writer(f)
         writer.writerow(DETECTIONS_FILE_COLUMNS)
         for frame in frames:
+            if not frame.observed:
+                continue
             count += 1
             timestamp = "" if frame.timestamp is None else frame.timestamp
             if not frame.detections:
@@ -111,7 +121,7 @@ def _read_analysis_layout(header, reader) -> List[FrameDetections]:
     col = {name: i for i, name in enumerate(header)}
     rows = []
     for line in reader:
-        if not line:
+        if not line or not "".join(line).strip():
             continue
         frame_id = int(float(line[col["frame"]]))
         det = Detection(
@@ -163,7 +173,7 @@ def _read_realtime_layout(reader, log_path: Optional[Path]) -> List[FrameDetecti
 
     frame_of = {}
     if log_path is not None and log_path.is_file():
-        with open(log_path, newline="", encoding="utf-8") as f:
+        with open(log_path, newline="", encoding="utf-8-sig") as f:
             log = csv.reader(f)
             next(log, None)
             for line in log:
@@ -180,10 +190,20 @@ def _read_realtime_layout(reader, log_path: Optional[Path]) -> List[FrameDetecti
     return frames
 
 
+def realtime_log_path(path) -> Optional[Path]:
+    """The ``*_log.csv`` YORU writes beside a real-time ``*_detect.csv``, if it is there."""
+    path = Path(path)
+    suffix = "_detect.csv"
+    if not path.name.endswith(suffix):
+        return None
+    log = path.with_name(path.name[:-len(suffix)] + "_log.csv")
+    return log if log.is_file() else None
+
+
 def load_detections(path) -> Tuple[str, List[FrameDetections]]:
     """``(layout, frames)`` for a detections CSV in any of the three layouts."""
     path = Path(path)
-    with open(path, newline="", encoding="utf-8") as f:
+    with open(path, newline="", encoding="utf-8-sig") as f:
         reader = csv.reader(f)
         header = tuple(h.strip() for h in next(reader, ()))
         if header[:len(DETECTIONS_FILE_COLUMNS)] == DETECTIONS_FILE_COLUMNS:
@@ -191,9 +211,25 @@ def load_detections(path) -> Tuple[str, List[FrameDetections]]:
         if header[:len(_ANALYSIS_PREFIX)] == _ANALYSIS_PREFIX:
             return "yoru-analysis", _read_analysis_layout(header, reader)
         if header[:len(DETECTION_COLUMNS)] == DETECTION_COLUMNS:
-            log = path.with_name(path.name.replace("_detect.csv", "_log.csv"))
-            return "yoru-realtime", _read_realtime_layout(reader, log if log != path else None)
+            return "yoru-realtime", _read_realtime_layout(reader, realtime_log_path(path))
     raise ValueError(
         f"{path.name}: not a detections file YORU Tracker can read "
         f"(header starts {', '.join(header[:4]) or '<empty>'})"
     )
+
+
+def align_to_video(layout: str, frames: Sequence[FrameDetections],
+                   fps: float) -> List[FrameDetections]:
+    """*frames* as one entry per video frame, from frame 0 to the last one read.
+
+    What a frame missing from the file means depends on who wrote it.  YORU's
+    video analysis ran the detector on every frame, so there it is a frame in
+    which nothing was found.  A YORU real-time recording leaves out the frames
+    its detector never ran on, and this application's own file the frames its
+    tracker never saw; those are filled in unobserved, so tracking the
+    aligned frames makes exactly the decisions tracking the file itself does.
+    """
+    by_id = {f.frame_id: f for f in frames}
+    observed = layout == "yoru-analysis"
+    return [by_id.get(i) or FrameDetections(i, i / fps, (), observed)
+            for i in range(max(by_id, default=-1) + 1)]

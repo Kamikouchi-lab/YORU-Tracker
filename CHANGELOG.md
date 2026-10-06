@@ -18,8 +18,10 @@ First version: the application, the tracker API and the Lite tracker.
 - Video tracking with timeline, frame stepping, overlays, track inspection,
   re-tracking from stored detections, CSV export and overlay rendering.
 - Realtime tracking from a camera or a video played in real time, with latency
-  and dropped-frame statistics and live CSV recording.
-- Batch tracking with per-file status and a failure report.
+  and dropped-frame statistics and live CSV recording (a new file after every
+  tracker reset, since IDs restart).
+- Batch tracking with per-file status and a failure report; outputs mirror
+  subfolders and never overwrite one another.
 - Tracks CSV starting with YORU's detection columns; JSON metadata sufficient
   to reproduce a run; readers for YORU's analysis and real-time detection CSVs.
 - Metrics (ID switches, fragmentation, recovery, false new IDs, IDF1, MOTA),

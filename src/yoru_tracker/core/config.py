@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -157,6 +158,14 @@ class TrackerConfig:
         out = []
         if not isinstance(self.mode, str) or not self.mode.strip():
             out.append("mode must be a non-empty string")
+        # NaN passes every range check below (each comparison is false) and
+        # would quietly switch a gate off; .nan and .inf are valid YAML.
+        for section in ("association", "kalman"):
+            owner = getattr(self, section)
+            for f in dataclasses.fields(owner):
+                value = getattr(owner, f.name)
+                if isinstance(value, float) and not math.isfinite(value):
+                    out.append(f"{section}.{f.name} must be a finite number, got {value!r}")
         lc, ac, kc = self.lifecycle, self.association, self.kalman
         if lc.max_age < 0:
             out.append("lifecycle.max_age must be >= 0")

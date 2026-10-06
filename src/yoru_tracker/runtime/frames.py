@@ -19,9 +19,18 @@ from yoru_tracker.core.types import Detection, TrackingResult
 
 @dataclass(frozen=True)
 class FrameDetections:
+    """One frame's detections.
+
+    *observed* is false for a video frame the detector never ran on -- in a
+    YORU real-time recording the detector takes only some of the camera's
+    frames.  Such a frame is kept so that frames line up with the video, but
+    it is not an empty frame: nothing was looked for, so nothing was missed.
+    """
+
     frame_id: int
     timestamp: Optional[float]
     detections: Tuple[Detection, ...]
+    observed: bool = True
 
 
 def track_frames(
@@ -30,10 +39,18 @@ def track_frames(
     *,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> List[TrackingResult]:
-    """Feed *frames* to *tracker* in order and collect the results."""
+    """Feed *frames* to *tracker* in order and collect the results.
+
+    One result per frame.  An unobserved frame is not given to the tracker --
+    to it the frame does not exist, and the next one is a longer step -- and
+    its result is empty.
+    """
     results = []
     for frame in frames:
         if should_stop is not None and should_stop():
             break
+        if not frame.observed:
+            results.append(TrackingResult(frame.frame_id, frame.timestamp))
+            continue
         results.append(tracker.update(frame.detections, frame.frame_id, frame.timestamp))
     return results

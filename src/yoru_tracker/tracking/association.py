@@ -132,17 +132,29 @@ def solve(cost: np.ndarray, limit: float) -> List[Tuple[int, int, float]]:
     """Minimum-cost assignment; pairs at or above *limit* stay unmatched.
 
     Capping every cost at *limit* before solving is the same optimisation as
-    letting each side stay unmatched at ``limit / 2``.  Returns
-    ``(row, column, cost)`` triples in row order.
+    letting each side stay unmatched at ``limit / 2``.  A gated pair
+    (``inf``) is never made.  With no limit (``inf``) as many pairs are made
+    as the gates allow, the cheapest such set.  Returns ``(row, column, cost)``
+    triples in row order.
     """
-    if cost.size == 0 or not np.isfinite(cost).any():
+    allowed = np.isfinite(cost)
+    if cost.size == 0 or not allowed.any():
         return []
-    capped = np.minimum(cost, limit)
+    if math.isfinite(limit):
+        ceiling = limit
+    else:
+        # The solver needs a complete assignment of finite costs, or it
+        # refuses the matrix as infeasible.  Stand in for each gated pair a
+        # cost dearer than any set of allowed pairs, so one is chosen only
+        # where nothing allowed is left; it is dropped below.
+        reach = float(np.abs(cost[allowed]).max()) + 1.0
+        ceiling = 2.0 * reach * (min(cost.shape) + 1)
+    capped = np.where(allowed, np.minimum(cost, ceiling), ceiling)
     rows, cols = linear_sum_assignment(capped)
     return [
         (int(r), int(c), float(cost[r, c]))
         for r, c in zip(rows, cols)
-        if np.isfinite(cost[r, c]) and cost[r, c] < limit
+        if allowed[r, c] and cost[r, c] < limit
     ]
 
 

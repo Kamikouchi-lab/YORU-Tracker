@@ -191,6 +191,18 @@ def test_known_population_never_retires_or_exceeds_the_count():
     assert sorted(x.track_id for x in r.tracked) == [0, 1]
 
 
+def test_known_population_hand_over_keeps_within_class():
+    t = create_tracker(TrackerConfig(lifecycle=LifecycleConfig(population=2, min_hits=1),
+                                     association=AssociationConfig(class_aware=True)))
+    t.update([det(100, 100), det(300, 100)], 0)
+    t.update([], 1)                                    # both animals lost
+    # Beyond every gate: one detection of their class, one of another class.
+    r = t.update([det(100, 400), det(500, 400, cls=1, name="other")], 2)
+    assert ids(r) == [0] and ids(r, predicted=True) == [1]
+    assert {x.track_id: (x.cx, x.cy) for x in r.tracked}[0] == (100, 400)
+    assert [d.class_id for d in r.unassigned] == [1]
+
+
 def test_known_population_ignores_one_frame_false_positives():
     t = lite(population=2)
     for f in range(10):

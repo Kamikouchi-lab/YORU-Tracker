@@ -18,6 +18,10 @@ tracking to its own thread or process later is a change here only.
 Every snapshot carries its frame's capture, detection and tracking times; the
 GUI adds when it was drawn.  Their differences are the latency figures in
 :class:`LiveStats`.
+
+A recording never holds two tracker generations: IDs start again at 0 after
+a reset, so the recording continues in a new file (``*_part2_tracks.csv``,
+...), each with its own metadata.
 """
 
 from __future__ import annotations
@@ -27,16 +31,34 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional, Tuple
 
 from yoru_tracker.core.config import TrackerConfig
 from yoru_tracker.core.registry import create_tracker
+from yoru_tracker.core.tracker_base import TrackerBase
 from yoru_tracker.core.types import Detection, TrackingResult
 from yoru_tracker.export.csv_export import TrackCsvWriter
 from yoru_tracker.export.metadata import build_metadata, write_metadata
 from yoru_tracker.runtime.detection import Detector
 
 logger = logging.getLogger(__name__)
+
+
+def _live_tracker(config: TrackerConfig) -> TrackerBase:
+    """A tracker for live use; one that is not realtime-capable is refused."""
+    tracker = create_tracker(config)
+    if not tracker.info.realtime_capable:
+        raise ValueError(f"{tracker.info.name} is not realtime-capable; it cannot track live")
+    return tracker
+
+
+def _part_path(path: Path, part: int) -> Path:
+    """``live_tracks.csv`` -> ``live_part2_tracks.csv``: still a ``*_tracks.csv``."""
+    stem, tail = path.stem, ""
+    if stem.endswith("_tracks"):
+        stem, tail = stem[:-len("_tracks")], "_tracks"
+    return path.with_name(f"{stem}_part{part}{tail}{path.suffix}")
 
 
 @dataclass(frozen=True)
@@ -149,7 +171,7 @@ class RealtimeTracking:
         self.tracker_config = tracker_config.validate()
         self.detector_settings = detector_settings
         self.source_description = source_description
-        self.tracker = create_tracker(self.tracker_config)
+        self.tracker = _live_tracker(self.tracker_config)
         self.error: Optional[BaseException] = None
         self.phase = "idle"
 
@@ -160,7 +182,7 @@ class RealtimeTracking:
         self._latest: Optional[TrackingSnapshot] = None
         self._generation = 0
         self._reset_requested = False
-        self._reset_config: Optional[TrackerConfig] = None
+        self._reset_tracker: Optional[TrackerBase] = None
         self._threads = []
         self._t0 = time.perf_counter()
 
@@ -191,6 +213,13 @@ class RealtimeTracking:
     def start(self) -> None:
         if self.running:
             return
+        if self._threads:
+            # Started before.  The new capture numbers its frames from 1
+            # again, so the tracker starts over too -- as a reported reset.
+            with self._lock:
+                self._latest_frame = None
+                self._last_processed_id = 0
+                self._reset_requested = True
         self._stop.clear()
         self.error = None
         self.phase = "starting"
@@ -217,13 +246,14 @@ class RealtimeTracking:
 
         With *config*, the tracker is rebuilt with those settings -- the only
         moment new settings reach a live run, since a reset is the one point
-        where changing them cannot alter IDs already handed out.
+        where changing them cannot alter IDs already handed out.  It is built
+        here, so settings that cannot run live are the caller's error and the
+        run carries on as it was.
         """
-        if config is not None:
-            config = config.validate()
+        tracker = _live_tracker(config) if config is not None else None
         with self._lock:
             self._reset_requested = True
-            self._reset_config = config
+            self._reset_tracker = tracker
         logger.info("Live tracker reset requested by the user%s",
                     f" (new settings, mode {config.mode})" if config else "")
 
@@ -261,14 +291,20 @@ class RealtimeTracking:
     def recording(self) -> bool:
         return self._recorder is not None
 
+    @property
+    def recording_path(self) -> Optional[Path]:
+        """The file being written now: a new one after every tracker reset."""
+        recorder = self._recorder
+        return None if recorder is None else recorder.path
+
     def start_recording(self, csv_path, *, include_predicted: bool = False) -> None:
         with self._lock:
             if self._recorder is not None:
                 return
             self._recorder = TrackCsvWriter(csv_path, include_predicted=include_predicted)
             self._recording_meta = {
-                "csv": str(csv_path),
-                "started_generation": self._generation,
+                "path": Path(csv_path),
+                "part": 1,
                 "include_predicted": include_predicted,
             }
         logger.info("Recording tracks to %s", csv_path)
@@ -277,20 +313,39 @@ class RealtimeTracking:
         with self._lock:
             recorder, self._recorder = self._recorder, None
             meta, self._recording_meta = self._recording_meta, None
-        if recorder is None:
-            return
+            tracker = self.tracker
+        if recorder is not None:
+            self._close_recording(recorder, meta, tracker)
+
+    def _close_recording(self, recorder: TrackCsvWriter, meta: dict,
+                         tracker: TrackerBase) -> None:
+        """Close one file of the recording and write its metadata beside it."""
         recorder.close()
         metadata = build_metadata(
-            self.tracker,
+            tracker,
             detector=self.detector_settings,
             source={"kind": "live", "description": self.source_description},
             outputs={"tracks_csv": recorder.path.name, "rows": recorder.rows,
-                     "include_predicted": meta["include_predicted"]},
-            summary={"processed_frames": self._processed, "dropped_frames": self._dropped,
-                     "tracker_resets": self._generation - meta["started_generation"]},
+                     "include_predicted": meta["include_predicted"], "part": meta["part"]},
+            summary={"processed_frames": self._processed, "dropped_frames": self._dropped},
         )
         write_metadata(recorder.path.with_suffix(".json"), metadata)
-        logger.info("Recording stopped: %d rows in %s", recorder.rows, recorder.path)
+        logger.info("Recorded %d rows in %s", recorder.rows, recorder.path)
+
+    def _next_recording_part(self, tracker: TrackerBase) -> None:
+        """After a reset: close this file, continue the recording in a new one.
+
+        IDs start again at 0, so rows from before and after the reset must
+        not share a file -- track 0 would name two animals.  *tracker* is the
+        one the closing file was tracked with.  Called with the lock held.
+        """
+        meta = self._recording_meta
+        self._close_recording(self._recorder, meta, tracker)
+        part = meta["part"] + 1
+        path = _part_path(meta["path"], part)
+        self._recorder = TrackCsvWriter(path, include_predicted=meta["include_predicted"])
+        self._recording_meta = dict(meta, part=part)
+        logger.info("Tracker reset while recording: continuing in %s", path)
 
     # -- threads --------------------------------------------------------
 
@@ -342,13 +397,17 @@ class RealtimeTracking:
                     frame = self._latest_frame
                     if self._reset_requested:
                         self._reset_requested = False
-                        if self._reset_config is not None:
-                            self.tracker = create_tracker(self._reset_config)
-                            self.tracker_config = self._reset_config
-                            self._reset_config = None
+                        previous = self.tracker
+                        if self._reset_tracker is not None:
+                            self.tracker, self._reset_tracker = self._reset_tracker, None
+                            self.tracker_config = self.tracker.config
                         else:
                             self.tracker.reset()
                         self._generation += 1
+                        # Rows already written carry the old IDs; with none
+                        # written yet the file can go on as it is.
+                        if self._recorder is not None and self._recorder.rows:
+                            self._next_recording_part(previous)
                 if self._last_processed_id:
                     self._dropped += max(0, frame.frame_id - self._last_processed_id - 1)
                 self._last_processed_id = frame.frame_id

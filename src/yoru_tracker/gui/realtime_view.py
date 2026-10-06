@@ -68,6 +68,7 @@ class RealtimeView:
         self._generation = 0
         self._reported = False
         self._last_status = 0.0
+        self._recording_path = None
 
     # ------------------------------------------------------------------
     # Building
@@ -250,9 +251,9 @@ class RealtimeView:
                 return
             factory = lambda: PacedVideoSource(path)  # noqa: E731
             description = f"video {Path(path).name} played in real time"
+        load, settings = self.state.detector_loader()
         try:
-            self.rt = RealtimeTracking(factory, self.state.load_detector, config,
-                                       detector_settings=self.state.detector.to_dict(),
+            self.rt = RealtimeTracking(factory, load, config, detector_settings=settings,
                                        source_description=description)
         except Exception as exc:
             self.app.report_error("Could not start live tracking", exc)
@@ -275,8 +276,13 @@ class RealtimeView:
     def reset(self) -> None:
         if self.rt is None or not self.rt.running:
             return
-        self.rt.reset_tracker(self.state.tracker_config)
-        dpg.set_value("rt_message", "Tracker reset: every track dropped, IDs restart at 0.")
+        try:
+            self.rt.reset_tracker(self.state.tracker_config)
+        except Exception as exc:  # the settings cannot run live; the run goes on
+            self.app.report_error("Tracker not reset", exc)
+            return
+        note = " Recording continues in a new file." if self.rt.recording else ""
+        dpg.set_value("rt_message", "Tracker reset: every track dropped, IDs restart at 0." + note)
 
     def toggle_recording(self) -> None:
         if self.rt is None:
@@ -296,6 +302,7 @@ class RealtimeView:
             except Exception as exc:
                 self.app.report_error("Could not start recording", exc)
                 return
+            self._recording_path = path
             dpg.set_value("rt_message", f"Recording to {path}")
         self._buttons()
 
@@ -355,6 +362,11 @@ class RealtimeView:
         rt = self.rt
         stats = rt.stats()
         result = snap.result if snap is not None else None
+        path = rt.recording_path
+        if path is not None and path != self._recording_path:
+            self._recording_path = path      # only a reset moves the recording on
+            dpg.set_value("rt_message", f"Tracker reset: IDs restart at 0; recording continues "
+                                        f"in {path}")
         values = {
             "mode": rt.tracker.info.name,
             "active": _ids(result.active_ids) if result else "-",

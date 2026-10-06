@@ -64,11 +64,16 @@ detector's boxes. Right: tracks, IDs and trails. Below: active and lost IDs,
 camera and detector frame rates, detector and tracker latency, capture-to-screen
 latency, dropped frames, and the event log. *Start recording* writes the tracks
 as they come. *Reset tracker* drops every track (IDs restart at 0) and is the
-only moment new settings reach a live run.
+only moment new settings reach a live run; a reset while recording continues
+the recording in a new file (`live_…_part2_tracks.csv`, …), so no file holds
+two animals under one ID.
 
 **Batch Tracking** — a folder of videos, one model, one output folder. Each file
 gets a status row; a file that fails is reported with its error and the batch
-moves on.
+moves on. With subfolders included, the output folder mirrors them
+(`day1/fly.mp4` → `day1/fly_tracks.csv`), and videos in one folder that differ
+only in their extension get it added (`fly_avi_tracks.csv`), so no result
+overwrites another.
 
 ## Command line
 
@@ -83,7 +88,10 @@ yoru-tracker config > tracker.yaml                                    # default 
 
 `track` also reads YORU's own detection files: the video-analysis CSV and the
 real-time `*_detect.csv` (with its `*_log.csv` beside it), so experiments
-recorded with YORU can be tracked afterwards.
+recorded with YORU can be tracked afterwards. In Video Tracking, *Load
+detections CSV* lays such a file over its video; a real-time recording needs
+its `*_log.csv` there, and frames its detector skipped are stepped over, not
+counted as frames in which every animal was missed.
 
 ## Output
 

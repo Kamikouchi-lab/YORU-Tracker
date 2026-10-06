@@ -5,19 +5,22 @@
 
 The model is loaded once.  Each video gets a fresh tracker, so IDs never
 carry over from one file to the next, and its own outputs (see
-:func:`yoru_tracker.runtime.video.export_run`).  A video that fails is
-recorded as failed with its error and the batch moves on; nothing about a
-failure is swallowed -- :func:`failure_report` lists every one.
+:func:`yoru_tracker.runtime.video.export_run`), named so that no two videos
+of a batch write the same file (see :func:`output_names`).  A video that
+fails is recorded as failed with its error and the batch moves on; nothing
+about a failure is swallowed -- :func:`failure_report` lists every one.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import traceback
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional
+from typing import Callable, Iterable, List, Optional, Sequence
 
 from yoru_tracker.core.config import TrackerConfig
 from yoru_tracker.runtime.detection import Detector
@@ -52,6 +55,29 @@ def find_videos(folder, extensions=VIDEO_EXTENSIONS, recursive: bool = False) ->
     return sorted(str(p) for p in folder.glob(pattern) if p.is_file() and p.suffix.lower() in exts)
 
 
+def output_names(paths: Sequence[str]) -> List[Path]:
+    """Where each video's outputs go, relative to the output folder.
+
+    ``.parent`` is a subfolder, ``.name`` the stem of the output files.  The
+    subfolders of a recursive batch are mirrored, so ``day1/fly.mp4`` and
+    ``day2/fly.mp4`` write ``day1/fly_tracks.csv`` and ``day2/fly_tracks.csv``;
+    videos in one folder that differ only in their extension (``fly.avi``,
+    ``fly.mp4``) have it added to the stem (``fly_avi``, ``fly_mp4``).
+    """
+    paths = [Path(p) for p in paths]
+    try:
+        root = Path(os.path.commonpath([str(p.parent) for p in paths])) if paths else None
+    except ValueError:  # on different drives: no common folder to mirror
+        root = None
+    names = [(p.parent.relative_to(root) if root is not None else Path()) / p.stem
+             for p in paths]
+    # Windows file names ignore case.
+    counts = Counter(str(n).lower() for n in names)
+    return [n.with_name(f"{p.stem}_{p.suffix.lstrip('.').lower()}")
+            if counts[str(n).lower()] > 1 else n
+            for p, n in zip(paths, names)]
+
+
 def run_batch(
     items: Iterable[BatchItem],
     detector: Detector,
@@ -67,7 +93,8 @@ def run_batch(
     tracker_config.validate()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    for item in items:
+    owner = {}  # output name (lower case) -> the video writing it
+    for item, name in zip(items, output_names([i.path for i in items])):
         if should_stop is not None and should_stop():
             break
         item.status = "running"
@@ -81,13 +108,19 @@ def run_batch(
                 on_update(item)
 
         try:
+            # Only paths output_names() cannot tell apart get here, but a
+            # result silently overwritten by the next video is never acceptable.
+            first = owner.setdefault(str(name).lower(), item.path)
+            if first != item.path:
+                raise FileExistsError(f"its outputs would overwrite those of {first}")
             run = detect_and_track(
                 item.path, detector, tracker_config,
                 detector_settings=detector_settings,
                 should_stop=should_stop, on_frame=progress,
             )
             item.outputs = {k: str(v) for k, v in export_run(
-                run, out_dir, include_predicted=include_predicted).items()}
+                run, out_dir / name.parent, stem=name.name,
+                include_predicted=include_predicted).items()}
             item.frames = run.processed
             item.track_ids = len(run.track_ids())
             item.status = "done" if run.complete else "stopped"

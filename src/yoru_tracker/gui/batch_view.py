@@ -170,9 +170,9 @@ class BatchView:
         if problems:
             self.app.report_error("Cannot start the batch", ValueError("; ".join(problems)))
             return
-        self.job = BatchJob(self.videos, self.state.load_detector, self.state.tracker_config,
-                            dpg.get_value("batch_outdir"),
-                            detector_settings=self.state.detector.to_dict(),
+        load, settings = self.state.detector_loader()
+        self.job = BatchJob(self.videos, load, self.state.tracker_config,
+                            dpg.get_value("batch_outdir"), detector_settings=settings,
                             include_predicted=dpg.get_value("batch_inc_pred"))
         self._reported = False
         dpg.set_value("batch_report", "")

@@ -87,6 +87,37 @@ def test_solve_finds_the_optimum(seed):
     assert all(c < limit for _, _, c in pairs)
 
 
+def _most_pairs(cost):
+    """``(pairs, total)`` of the largest set of allowed pairs, cheapest among those."""
+    n, m = cost.shape
+    for k in range(min(n, m), 0, -1):
+        totals = [
+            sum(cost[r, c] for r, c in zip(rows, cols))
+            for rows in itertools.combinations(range(n), k)
+            for cols in itertools.permutations(range(m), k)
+            if all(np.isfinite(cost[r, c]) for r, c in zip(rows, cols))
+        ]
+        if totals:
+            return k, min(totals)
+    return 0, 0.0
+
+
+@pytest.mark.parametrize("seed", range(25))
+def test_solve_without_a_limit_pairs_all_the_gates_allow(seed):
+    rng = np.random.default_rng(seed)
+    n, m = rng.integers(1, 5, size=2)
+    cost = rng.uniform(0, 300, size=(n, m))
+    cost[rng.random((n, m)) < 0.5] = np.inf
+    pairs = solve(cost, math.inf)
+    assert (len(pairs), sum(c for *_, c in pairs)) == pytest.approx(_most_pairs(cost))
+
+
+def test_solve_without_a_limit_survives_rows_competing_for_one_column():
+    # Both rows can only take column 0; on its own the solver calls this infeasible.
+    cost = np.array([[5.0, np.inf], [3.0, np.inf]])
+    assert solve(cost, math.inf) == [(1, 0, 3.0)]
+
+
 def test_a_pair_dearer_than_two_unmatched_is_not_made():
     # The forced matching would pair A with its second choice to give B a
     # detection; leaving B unmatched is cheaper.
