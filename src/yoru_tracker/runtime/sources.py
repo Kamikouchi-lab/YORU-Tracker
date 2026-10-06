@@ -5,14 +5,38 @@
 
 from __future__ import annotations
 
+import bisect
+import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
 import cv2
 
 VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".wmv", ".m4v", ".mpg", ".mpeg")
+
+#: A frame at most this far ahead is reached by reading on, which is exact,
+#: rather than by seeking, which decodes from a keyframe before it anyway.
+READ_AHEAD = 32
+
+
+def frame_of(times: Sequence[float], ms: Optional[float]) -> Optional[int]:
+    """Which frame of a sequential pass has presentation time *ms*.
+
+    *times* are the times that pass recorded, frame by frame, increasing.
+    ``len(times)`` for a time past every recorded one; ``None`` when it
+    matches no frame.
+    """
+    if ms is None or not math.isfinite(ms) or not times:
+        return None
+    n = len(times)
+    i = bisect.bisect_left(times, ms, 0, n)
+    best = min((j for j in (i - 1, i) if 0 <= j < n), key=lambda j: abs(times[j] - ms))
+    gaps = [times[k] - times[k - 1] for k in (best, best + 1) if 0 < k < n]
+    if abs(times[best] - ms) < (min(gaps) / 2 if gaps else 0.5):
+        return best
+    return n if ms > times[n - 1] else None
 
 
 def _flip(frame, v_flip: bool, h_flip: bool):
@@ -70,17 +94,67 @@ class VideoFileSource:
         self._next += 1
         return index, _flip(frame, self.v_flip, self.h_flip)
 
+    def position_ms(self) -> Optional[float]:
+        """Presentation time of the frame last read, as the file stamps it."""
+        ms = self._cap.get(cv2.CAP_PROP_POS_MSEC)
+        return float(ms) if ms is not None and math.isfinite(ms) else None
+
     def seek(self, index: int) -> None:
         index = max(0, int(index))
         if index != self._next:
             self._cap.set(cv2.CAP_PROP_POS_FRAMES, index)
             self._next = index
 
-    def frame_at(self, index: int):
-        """The frame at *index*, or ``None`` past the end."""
-        self.seek(index)
+    def frame_at(self, index: int, times: Optional[Sequence[float]] = None):
+        """The frame at *index* -- the one reading from the start numbers so --
+        or ``None`` past the end.
+
+        A seek lands where the file's index says, and for some files
+        (variable frame rate, edit lists, broken timestamps) that is not the
+        frame sequential reading numbers *index*: the picture would not be
+        the one the results belong to.  So a frame a little ahead is read
+        on to instead, and with *times* -- every frame's presentation time,
+        recorded by a sequential pass -- a seek is checked and corrected.
+        """
+        index = max(0, int(index))
+        if self._next <= index <= self._next + READ_AHEAD:
+            return self._read_on_to(index)
+        if not times or index >= len(times):
+            self.seek(index)
+            _, frame = self.read()
+            return frame
+        aim = index
+        for _ in range(4):
+            self._cap.set(cv2.CAP_PROP_POS_FRAMES, aim)
+            if not self._cap.grab():
+                break
+            at = frame_of(times, self._cap.get(cv2.CAP_PROP_POS_MSEC))
+            if at is None:              # a time the pass never saw: trust the seek
+                at = aim
+            if at <= index:
+                self._next = at + 1     # the frame grabbed is frame `at`
+                if at == index:
+                    ok, frame = self._cap.retrieve()
+                    return _flip(frame, self.v_flip, self.h_flip) if ok else None
+                return self._read_on_to(index)
+            aim = max(0, aim - 2 * (at - index) - 1)   # landed past it: aim further back
+        # Reading from the start is slow but exact.
+        self._reopen()
+        return self._read_on_to(index)
+
+    def _read_on_to(self, index: int):
+        """Read on from the current position to *index*; that frame, or None."""
+        while self._next < index:
+            if not self._cap.grab():
+                return None
+            self._next += 1
         _, frame = self.read()
         return frame
+
+    def _reopen(self) -> None:
+        self._cap.release()
+        self._cap = cv2.VideoCapture(self.path)
+        self._next = 0
 
     def close(self) -> None:
         if self._cap is not None:

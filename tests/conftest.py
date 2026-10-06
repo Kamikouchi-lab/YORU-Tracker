@@ -74,6 +74,44 @@ def video_file(tmp_path):
     return write_video(tmp_path / "blobs.avi")
 
 
+_REAL_CAPTURE = cv2.VideoCapture
+
+
+class LateSeeks:
+    """A ``cv2.VideoCapture`` whose seeks land three frames late, as some files' do."""
+
+    def __init__(self, path):
+        self._cap = _REAL_CAPTURE(path)
+
+    def set(self, prop, value):
+        if prop == cv2.CAP_PROP_POS_FRAMES and value:
+            value += 3
+        return self._cap.set(prop, value)
+
+    def __getattr__(self, name):
+        return getattr(self._cap, name)
+
+
+@pytest.fixture
+def late_seeks(monkeypatch):
+    """Every video opened from here on seeks three frames late."""
+    monkeypatch.setattr(cv2, "VideoCapture", LateSeeks)
+
+
+def read_all(path):
+    """Every frame of *path* read in order, and the time the file gives each."""
+    from yoru_tracker.runtime.sources import VideoFileSource
+
+    frames, times = [], []
+    with VideoFileSource(path) as source:
+        while True:
+            _, frame = source.read()
+            if frame is None:
+                return frames, times
+            frames.append(frame)
+            times.append(source.position_ms())
+
+
 def walk(n, start, velocity):
     """Positions of a straight walk, one per frame."""
     return [(start[0] + velocity[0] * t, start[1] + velocity[1] * t) for t in range(n)]

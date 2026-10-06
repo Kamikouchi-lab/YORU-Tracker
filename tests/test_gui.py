@@ -141,6 +141,32 @@ def test_the_open_video_is_kept_while_it_is_busy(app, video_file, tmp_path):
     assert app.video._task is None
 
 
+def test_scrubbing_back_shows_the_frame_the_results_belong_to(app, tmp_path, monkeypatch,
+                                                              late_seeks):
+    import time
+
+    import numpy as np
+
+    from conftest import BlobDetector, read_all, write_video
+
+    path = write_video(tmp_path / "v.avi", frames=60)
+    frames, _ = read_all(path)
+    monkeypatch.setattr(app.state, "detector_loader", lambda: (BlobDetector, {}))
+    app.state.set_detector(model_path="blobs")
+    app.show_view("video")
+    app.video.open_video(str(path))
+    app.video.start()
+    deadline = time.time() + 20
+    while app.video.job.running and time.time() < deadline:
+        app.tick()
+    app.tick()
+    assert app.video.run.complete
+    for index in (50, 10, 33):                  # each a seek, which lands 3 frames late
+        app.video.goto(index, user=True)
+        app.tick()
+        assert np.array_equal(app.video._frame_cache[1], frames[index]), index
+
+
 def test_the_live_event_log_has_the_events_of_frames_it_never_drew(app, tmp_path, monkeypatch):
     import time
 

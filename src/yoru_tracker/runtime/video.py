@@ -59,6 +59,11 @@ class VideoTracking:
     ``frames[i]`` and ``results[i]`` belong to video frame ``i``.  Both lists
     only grow while a pass is running, so a reader on another thread may use
     any index below their current length.
+
+    *frame_ms* is each frame's presentation time as the file stamps it,
+    recorded by the sequential pass, so that a seek can be checked against
+    it (see :meth:`VideoFileSource.frame_at`); ``None`` when the file's
+    times are not usable (missing, or not increasing).
     """
 
     info: VideoInfo
@@ -69,6 +74,7 @@ class VideoTracking:
     stats: RunStats = field(default_factory=RunStats)
     complete: bool = False
     tracker: Optional[TrackerBase] = None
+    frame_ms: Optional[List[float]] = field(default_factory=list)
 
     @property
     def processed(self) -> int:
@@ -124,6 +130,7 @@ def detect_and_track(
         run.tracker_config = tracker_config
         run.detector_settings = detector_settings
         run.tracker = tracker
+        run.frame_ms = []
         fps = source.info.fps
         while True:
             if should_stop is not None and should_stop():
@@ -132,6 +139,12 @@ def detect_and_track(
             if image is None:
                 run.complete = True
                 break
+            ms = source.position_ms()
+            if run.frame_ms is not None:
+                if ms is None or (run.frame_ms and ms <= run.frame_ms[-1]):
+                    run.frame_ms = None          # no times to check seeks against
+                else:
+                    run.frame_ms.append(ms)
             t0 = time.perf_counter()
             detections = tuple(detector.detect(image))
             t1 = time.perf_counter()
@@ -169,6 +182,7 @@ def retrack(run: VideoTracking, tracker_config: TrackerConfig) -> VideoTracking:
         stats=stats,
         complete=run.complete,
         tracker=tracker,
+        frame_ms=run.frame_ms,
     )
 
 

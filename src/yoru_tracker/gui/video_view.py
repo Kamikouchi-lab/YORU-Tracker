@@ -541,7 +541,9 @@ class VideoView:
         cached_index, cached = self._frame_cache
         if cached_index == index and cached is not None:
             return cached
-        frame = self.source.frame_at(index)
+        # The tracking pass's frame times make a seek land on the frame its
+        # results belong to, whatever the file's index says.
+        frame = self.source.frame_at(index, self.run.frame_ms if self.run is not None else None)
         self._frame_cache = (index, frame)
         return frame
 

@@ -30,7 +30,7 @@ from yoru_tracker.runtime.detections_file import (
 )
 from yoru_tracker.runtime.frames import FrameDetections, track_frames
 from yoru_tracker.runtime.realtime import RealtimeTracking
-from yoru_tracker.runtime.sources import VideoInfo
+from yoru_tracker.runtime.sources import VideoFileSource, VideoInfo, frame_of
 from yoru_tracker.runtime.video import (
     VideoTracking,
     detect_and_track,
@@ -39,12 +39,40 @@ from yoru_tracker.runtime.video import (
     retrack,
 )
 
-from conftest import BlobDetector, det, write_video
+from conftest import BlobDetector, det, read_all, write_video
 
 
 def _csv_rows(path):
     with open(path, newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
+
+
+# -- video sources ---------------------------------------------------------------
+
+def test_frame_of_finds_a_frame_by_its_time():
+    times = [0.0, 40.0, 80.0, 120.0]
+    assert [frame_of(times, ms) for ms in (0.0, 80.0, 81.0, 120.0)] == [0, 2, 2, 3]
+    assert frame_of(times, 60.0) is None              # between two frames
+    assert frame_of(times, 400.0) == 4                # past every recorded frame
+    assert frame_of([], 40.0) is None and frame_of(times, None) is None
+
+
+def test_a_seek_that_lands_elsewhere_is_corrected_by_the_frame_times(tmp_path, late_seeks):
+    path = write_video(tmp_path / "v.avi", frames=120)
+    frames, times = read_all(path)
+    with VideoFileSource(path) as source:
+        source.frame_at(100)
+        # Unchecked, a seek back shows a frame three later than asked for.
+        assert np.array_equal(source.frame_at(10), frames[13])
+        for target in (10, 90, 0, 119, 60, 61, 70):
+            assert np.array_equal(source.frame_at(target, times), frames[target]), target
+
+
+def test_the_tracking_pass_records_every_frames_time(video_file, blob_detector):
+    run = detect_and_track(video_file, blob_detector, TrackerConfig())
+    assert len(run.frame_ms) == run.processed == 40
+    assert all(b > a for a, b in zip(run.frame_ms, run.frame_ms[1:]))
+    assert retrack(run, TrackerConfig()).frame_ms is run.frame_ms
 
 
 # -- video ---------------------------------------------------------------------
