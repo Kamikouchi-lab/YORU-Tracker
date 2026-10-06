@@ -22,6 +22,12 @@ import numpy as np
 _H = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]])
 _I4 = np.eye(4)
 
+#: Squared Mahalanobis distance beyond which an observation is not one the
+#: motion model expects: the 99% point of chi-square with two degrees of
+#: freedom.  On the benchmark every animal found again after a detector miss
+#: stays below 1.2; an animal that jumped is over 200.
+IMPLAUSIBLE = 9.21
+
 
 class ConstantVelocityModel:
     """Kalman filter with constant-velocity dynamics.
@@ -34,6 +40,10 @@ class ConstantVelocityModel:
                  process_noise: float, measurement_noise: float):
         self._q = float(process_noise)
         self._r = float(measurement_noise)
+        self.restart(x, y, size)
+
+    def restart(self, x: float, y: float, size: float) -> None:
+        """Start again at ``(x, y)``, knowing no more than a new track does."""
         size = max(float(size), 1.0)
         self.state = np.array([float(x), float(y), 0.0, 0.0])
         pos_var = (self._r * size) ** 2
@@ -81,6 +91,10 @@ class ConstantVelocityModel:
         residual, s = self.innovation(x, y, size)
         return float(residual @ np.linalg.solve(s, residual))
 
+    def implausible(self, x: float, y: float, size: float) -> bool:
+        """Is ``(x, y)`` somewhere this model gives less than a 1% chance?"""
+        return self.mahalanobis_sq(x, y, size) > IMPLAUSIBLE
+
     def update(self, x: float, y: float, size: float) -> None:
         residual, s = self.innovation(x, y, size)
         gain = self.cov @ _H.T @ np.linalg.inv(s)
@@ -100,6 +114,9 @@ class StationaryModel:
     """
 
     def __init__(self, x: float, y: float, size: float, **_):
+        self.restart(x, y, size)
+
+    def restart(self, x: float, y: float, size: float) -> None:
         self._pos = (float(x), float(y))
         self._vel = (0.0, 0.0)
         self._since_update = 0.0
@@ -111,6 +128,10 @@ class StationaryModel:
     @property
     def velocity(self) -> Tuple[float, float]:
         return self._vel
+
+    def implausible(self, x: float, y: float, size: float) -> bool:
+        # It never extrapolates, so no observation can throw a prediction off.
+        return False
 
     def predict(self, dt: float, size: float) -> None:
         self._since_update += float(dt)

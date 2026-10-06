@@ -50,6 +50,29 @@ def test_covariance_stays_symmetric_positive_definite():
     assert np.all(np.linalg.eigvalsh(m.cov) > 0)
 
 
+def test_implausible_is_measured_against_the_grown_uncertainty():
+    m = _model()
+    for t in range(1, 30):
+        m.predict(1, 30.0)
+        m.update(4.0 * t, 0.0, 30.0)
+    m.predict(1, 30.0)
+    assert not m.implausible(124.0, 0.0, 30.0)      # where it should be
+    assert m.implausible(124.0, 150.0, 30.0)         # 5 body lengths off
+    for _ in range(20):
+        m.predict(1, 30.0)                          # unseen for long: far is possible
+    assert not m.implausible(204.0, 150.0, 30.0)
+
+
+def test_restart_forgets_the_motion():
+    m = _model()
+    for t in range(1, 30):
+        m.predict(1, 30.0)
+        m.update(4.0 * t, 0.0, 30.0)
+    m.restart(500.0, 20.0, 30.0)
+    assert m.position == (500.0, 20.0) and m.velocity == (0.0, 0.0)
+    assert np.allclose(m.cov, _model(500.0, 20.0).cov)
+
+
 def test_stationary_model_never_extrapolates_but_reports_velocity():
     m = StationaryModel(10.0, 10.0, 30.0)
     m.predict(1, 30.0)

@@ -107,9 +107,25 @@ class TrackRecord:
         if state is not None:
             state[2:] = 0.0
 
-    def absorb(self, detection: Detection, frame_id: int, cost: Optional[float]) -> None:
-        """Take *detection* as this frame's observation."""
-        self.motion.update(detection.cx, detection.cy, box_size(detection.box))
+    def absorb(self, detection: Detection, frame_id: int, cost: Optional[float], *,
+               motion=None) -> None:
+        """Take *detection* as this frame's observation.
+
+        *motion*, if given, replaces the track's motion model instead of being
+        corrected by the detection: on a hand-over, the candidate's model
+        has followed the animal since it reappeared.
+        """
+        size = box_size(detection.box)
+        if motion is not None:
+            self.motion = motion
+        elif self.missed_frames and self.motion.implausible(detection.cx, detection.cy, size):
+            # Found again far from anywhere its motion allowed: the gap held
+            # a jump or a stop, not speed.  Corrected towards the detection,
+            # the model would take the distance for velocity and throw the
+            # next predictions -- and the exported vx, vy -- far off.
+            self.motion.restart(detection.cx, detection.cy, size)
+        else:
+            self.motion.update(detection.cx, detection.cy, size)
         self.shape = (detection.w, detection.h, detection.angle)
         self.last_box = detection.box
         # A track reports the class of its latest detection: with matching

@@ -161,7 +161,13 @@ revises a decision, so it can sit in a closed loop. Per frame:
 4. Newcomers: tentative tracks, given an ID after `min_hits` sightings.
 5. Unmatched tracks are LOST (still predicted); past `max_age` they are
    retired — unless the population is known, in which case a candidate seen
-   `min_hits` times while every ID is taken is handed to the nearest lost track.
+   `min_hits` times while every ID is taken is handed to the nearest lost track,
+   together with the motion the candidate has followed since it appeared.
+
+A lost track found again where its motion model gave it less than a 1% chance
+(the animal jumped, or stopped while unseen) starts its motion afresh there,
+rather than taking the distance for speed: the velocity it reports stays the
+animal's.
 
 Rectangles have no head and tail, so orientation is compared as an axis
 (modulo 180°) and only for elongated boxes. The same detections in the same

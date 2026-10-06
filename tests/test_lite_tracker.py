@@ -137,6 +137,29 @@ def test_detector_dropout_keeps_the_id_and_predicts_meanwhile():
             assert ids(r) == [0]
 
 
+def test_a_track_found_where_its_motion_said_keeps_its_velocity():
+    t = lite()
+    path = walk(30, (100, 100), (4, 0))
+    for f in range(30):
+        r = t.update([] if 10 <= f < 14 else [det(*path[f])], f)
+        if f == 14:
+            assert r.tracked[0].velocity == pytest.approx((4, 0), abs=0.5)
+
+
+def test_a_track_found_far_from_its_prediction_does_not_report_the_gap_as_speed():
+    t = lite()
+    for f in range(20):
+        t.update([det(100, 100), det(300 + 2 * f, 300)], f)
+    for f in range(20, 23):
+        t.update([det(100, 100)], f)                     # the walker is missed...
+    r = t.update([det(100, 100), det(480, 300)], 23)    # ...and found 134 px ahead
+    assert ids(r) == [0, 1]
+    assert abs(r.tracked[1].velocity[0]) < 3            # not 45 px/frame
+    for f in range(24, 30):
+        r = t.update([det(100, 100), det(480 + 2 * (f - 23), 300)], f)
+    assert r.tracked[1].velocity == pytest.approx((2, 0), abs=0.3)
+
+
 def test_frame_gaps_are_longer_motion_steps():
     t = lite()
     path = walk(40, (100, 100), (5, 0))
@@ -177,6 +200,20 @@ def test_known_population_recovers_a_jump_without_a_new_id():
     r = t.update([det(121, 100), det(401, 50)], 21)
     assert ids(r) == [0, 1]
     assert {x.track_id: x.cy for x in r.tracked}[1] == 50
+
+
+def test_a_handed_over_track_moves_at_the_animals_speed_not_the_jumps():
+    t = lite(population=2)
+    for f in range(20):
+        t.update([det(100, 100), det(300 + 2 * f, 300)], f)
+    for k, f in enumerate(range(20, 26)):
+        # It jumped 270 px and walks on at 2 px/frame.
+        r = t.update([det(100, 100), det(340 + 2 * k, 30)], f)
+        if r.lost_ids:
+            continue
+        assert ids(r) == [0, 1]
+        assert r.tracked[1].velocity == pytest.approx((2, 0), abs=0.5)   # not -149
+    assert not r.lost_ids
 
 
 def test_known_population_never_retires_or_exceeds_the_count():

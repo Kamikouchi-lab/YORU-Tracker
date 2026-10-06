@@ -23,7 +23,8 @@ One update::
     start a tentative track for every detection still unmatched
     hand-over (known population only): a candidate seen min_hits times while
                             every ID is taken becomes the nearest lost track,
-                            however far away -- an animal that jumped
+                            however far away -- an animal that jumped -- and
+                            the track takes over the candidate's motion
 
 Lost tracks compete in the primary pass on equal terms.  Holding them back
 for a later pass looks like giving established tracks priority, but it lets a
@@ -261,7 +262,9 @@ class LiteTracker(TrackerBase):
             index = index_of.pop(candidate.key)
             # This frame was already counted as missed; the track is found in it.
             gap = track.missed_frames - 1
-            track.absorb(detections[index], frame_id, None)
+            # The candidate's motion has followed the animal since it came
+            # back; the track's own would read the jump as speed.
+            track.absorb(detections[index], frame_id, None, motion=candidate.motion)
             for event in self._lifecycle.matched(track, frame_id, gap):
                 events.append(dataclasses.replace(
                     event, detail=f"{event.detail}, {distance:.0f} px from where it was lost"))
