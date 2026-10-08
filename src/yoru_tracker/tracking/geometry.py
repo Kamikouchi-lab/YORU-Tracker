@@ -3,8 +3,9 @@
 
 """Box geometry used to compare a track with a detection.
 
-Boxes are YORU's ``(cx, cy, w, h, angle)``; corners come from
-``yoru.libs.obb`` so the convention is the one the detectors use.  Pure
+Boxes are YORU's ``(cx, cy, w, h, angle)``; corners and the point-in-box
+test come from ``yoru.libs.obb`` so the convention is the one the detectors
+use.  Pure
 Python: a frame has a handful of animals, and gating (see
 :mod:`yoru_tracker.tracking.association`) means only a few pairs per frame
 ever reach the polygon code.
@@ -15,7 +16,7 @@ from __future__ import annotations
 import math
 from typing import List, Sequence, Tuple
 
-from yoru.libs.obb import obb_corners
+from yoru.libs.obb import obb_corners, point_in_obb
 
 from yoru_tracker.core.types import Box
 
@@ -169,3 +170,8 @@ def size_difference(a: Box, b: Box) -> float:
 def moved(box: Box, cx: float, cy: float) -> Box:
     """*box* with its centre placed at ``(cx, cy)``."""
     return (float(cx), float(cy), box[2], box[3], box[4])
+
+
+def contains(box: Box, point: Point) -> bool:
+    """Is *point* inside *box*, edge included?"""
+    return point_in_obb(point[0], point[1], box)

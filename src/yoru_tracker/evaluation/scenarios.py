@@ -7,8 +7,11 @@ Each scenario moves fly-sized animals (40 x 16 px) through a 640 x 480 arena
 and produces what a detector would report for them: centre jitter, size
 jitter, occasional misses -- and, where the scenario calls for it, the hard
 cases: animals crossing at speed, touching, lying on top of each other,
-dropping out for several frames, entering and leaving.  Ground truth is the
-animals' true positions, so every tracker decision can be scored.
+dropping out for several frames, entering and leaving, and the spare boxes a
+real detector adds around them (one box around two touching animals that are
+also detected singly; a second box of another class on the same animal).
+Ground truth is the animals' true positions, so every tracker decision can
+be scored.
 
 One aggregate score hides exactly the failures that matter, so scenarios are
 scored separately (see :mod:`yoru_tracker.evaluation.benchmark`).  All
@@ -60,6 +63,18 @@ class DetectorModel:
     obb: bool = False
     merge_distance: float = 0.0   # animals closer than this are seen as one box
     false_positive_rate: float = 0.0
+    #: Two animals closer than *span_distance*, each still detected on its
+    #: own, are also reported together -- one upright box around both -- with
+    #: chance *span_rate* per frame and a confidence drawn from
+    #: *span_confidence*.  The default range is what such boxes scored in a
+    #: real recording of sixty flies (quartiles 0.32, 0.40, 0.52).
+    span_distance: float = 0.0
+    span_rate: float = 0.0
+    span_confidence: Tuple[float, float] = (0.25, 0.6)
+    #: Chance per frame that an animal detected on its own is reported a
+    #: second time with another class, as a detector that suppresses
+    #: overlapping boxes class by class does.
+    duplicate_rate: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +146,24 @@ def _inside(cx, cy) -> bool:
     return 0.0 <= cx < ARENA[0] and 0.0 <= cy < ARENA[1]
 
 
+def _around(group: Sequence[State]) -> Box:
+    """One upright box around every animal of *group*."""
+    corners = [obb_to_aabb(_box(cx, cy, hd)) for _, cx, cy, hd in group]
+    x1 = min(c[0] for c in corners)
+    y1 = min(c[1] for c in corners)
+    x2 = max(c[2] for c in corners)
+    y2 = max(c[3] for c in corners)
+    return ((x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1, 0.0)
+
+
+def _reported(box: Box, conf: float, obb: bool, class_id: int = 0,
+              class_name: str = "fly") -> Detection:
+    if obb:
+        return Detection.from_obb(*box, confidence=conf, class_id=class_id, class_name=class_name)
+    return Detection.from_xyxy(*obb_to_aabb(box), confidence=conf, class_id=class_id,
+                               class_name=class_name)
+
+
 def _detect(rng, states: List[State], model: DetectorModel, drop: Callable[[int, int], bool],
             frame: int) -> List[Detection]:
     visible = [s for s in states if _inside(s[1], s[2])]
@@ -147,6 +180,7 @@ def _detect(rng, states: List[State], model: DetectorModel, drop: Callable[[int,
         groups = [[s] for s in visible]
 
     dets = []
+    single = []  # boxes of the animals detected on their own
     for group in groups:
         if len(group) == 1:
             gid, cx, cy, heading = group[0]
@@ -158,20 +192,27 @@ def _detect(rng, states: List[State], model: DetectorModel, drop: Callable[[int,
             h = WIDTH + rng.normal(0.0, model.size_jitter)
             angle = normalize_angle(heading + rng.normal(0.0, model.angle_jitter))
             box = (cx, cy, w, h, angle)
+            single.append(box)
         else:
             # Touching animals: one box around both.
-            corners = [obb_to_aabb(_box(cx, cy, hd)) for _, cx, cy, hd in group]
-            x1 = min(c[0] for c in corners)
-            y1 = min(c[1] for c in corners)
-            x2 = max(c[2] for c in corners)
-            y2 = max(c[3] for c in corners)
-            box = ((x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1, 0.0)
+            box = _around(group)
         conf = float(min(0.99, max(0.3, rng.normal(0.85, 0.05))))
-        if model.obb:
-            dets.append(Detection.from_obb(*box, confidence=conf, class_id=0, class_name="fly"))
-        else:
-            dets.append(Detection.from_xyxy(*obb_to_aabb(box), confidence=conf,
-                                            class_id=0, class_name="fly"))
+        dets.append(_reported(box, conf, model.obb))
+    if model.span_rate:
+        alone = [g[0] for g in groups if len(g) == 1]
+        low, high = model.span_confidence
+        for i, a in enumerate(alone):
+            for b in alone[i + 1:]:
+                if (math.hypot(a[1] - b[1], a[2] - b[2]) < model.span_distance
+                        and rng.random() < model.span_rate):
+                    dets.append(_reported(_around((a, b)), float(rng.uniform(low, high)), False))
+    if model.duplicate_rate:
+        for cx, cy, w, h, angle in single:
+            if rng.random() < model.duplicate_rate:
+                twin = (cx + rng.normal(0.0, 2.0), cy + rng.normal(0.0, 2.0),
+                        w * (1.0 + rng.normal(0.0, 0.05)), h * (1.0 + rng.normal(0.0, 0.05)), angle)
+                conf = float(min(0.99, max(0.3, rng.normal(0.8, 0.08))))
+                dets.append(_reported(twin, conf, model.obb, 1, "wing_extension"))
     if model.false_positive_rate and rng.random() < model.false_positive_rate:
         cx, cy = rng.uniform(20, ARENA[0] - 20), rng.uniform(20, ARENA[1] - 20)
         dets.append(Detection.from_xyxy(cx - 12, cy - 6, cx + 12, cy + 6,
@@ -345,6 +386,52 @@ def _obb_crossing(rng):
                  {0: a, 1: b}, rng, DetectorModel(obb=True))
 
 
+def _spanning_box(rng):
+    # One pair walks side by side, a body width apart; the other meets head
+    # to head and waits.  Every animal is detected on its own, and half the
+    # time the detector adds a less confident box around a touching pair.
+    tracks = {
+        0: straight(N, (60, 120), (580, 120)),
+        1: straight(N, (60, 140), (580, 140)),
+        2: waypoints(N, [(120, 340), (300, 340), (300, 340), (140, 420)], holds=[0, 60, 0, 0]),
+        3: waypoints(N, [(520, 340), (342, 340), (342, 340), (500, 420)], holds=[0, 60, 0, 0]),
+    }
+    return build("spanning_box", "two touching pairs, each animal detected, and often a "
+                 "low-confidence box around the pair", tracks, rng,
+                 DetectorModel(span_distance=LENGTH * 1.1, span_rate=0.5))
+
+
+def _class_duplicates(rng):
+    tracks = {i: random_walk(rng, N, (160 + 110 * i, 240)) for i in range(4)}
+    return build("class_duplicates", "four animals; each is often reported a second time, "
+                 "as another class", tracks, rng, DetectorModel(duplicate_rate=0.3))
+
+
+def _hidden_in_merge(rng):
+    # A walks onto B and the two are one box for about 70 frames.  Across the
+    # arena C and D stand side by side and are also reported together,
+    # confidently: a spare box that must not be given A's identity.
+    a = waypoints(N, [(120, 120), (300, 120), (300, 120), (140, 60)], holds=[0, 50, 0, 0])
+    b = [(306.0, 124.0, 0.0)] * N
+    c = straight(N, (460, 360), (480, 360))
+    d = straight(N, (460, 380), (480, 380))
+    return build("hidden_in_merge", "an animal hidden in another's box while a confident box "
+                 "spans two others elsewhere", {0: a, 1: b, 2: c, 3: d}, rng,
+                 DetectorModel(merge_distance=LENGTH * 0.4, span_distance=LENGTH, span_rate=0.7,
+                               span_confidence=(0.6, 0.8)))
+
+
+def _dense_arena(rng):
+    tracks = {}
+    for i in range(40):
+        start = (rng.uniform(LENGTH, ARENA[0] - LENGTH), rng.uniform(LENGTH, ARENA[1] - LENGTH))
+        tracks[i] = random_walk(rng, N, start, speed=1.5)
+    return build("dense_arena", "forty animals in one arena: merges, spanning boxes and "
+                 "boxes of a second class", tracks, rng,
+                 DetectorModel(merge_distance=LENGTH * 0.4, span_distance=LENGTH, span_rate=0.15,
+                               duplicate_rate=0.02))
+
+
 SCENARIOS: Dict[str, Callable] = {
     "single": _single,
     "far_apart": _far_apart,
@@ -362,6 +449,10 @@ SCENARIOS: Dict[str, Callable] = {
     "obb_crossing": _obb_crossing,
     "jump": _jump,
     "long_contact": _long_contact,
+    "spanning_box": _spanning_box,
+    "class_duplicates": _class_duplicates,
+    "hidden_in_merge": _hidden_in_merge,
+    "dense_arena": _dense_arena,
 }
 
 

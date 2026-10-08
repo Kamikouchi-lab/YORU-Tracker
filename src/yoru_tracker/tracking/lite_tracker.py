@@ -11,20 +11,30 @@ what makes it usable inside a closed loop.
 One update::
 
     predict every track's centre (constant velocity, dt from frame IDs)
+    sort the detections     a repeat of a more confident detection of another
+                            class is set aside; the rest are trusted
+                            (confidence >= high_confidence) or doubtful
     primary association     every confirmed track, visible or lost, in one
-                            assignment: strict gate, distance from the
-                            prediction + IoU + long axis
+                            assignment against the trusted detections: strict
+                            gate, distance from the prediction + IoU + long
+                            axis
     recovery association    confirmed tracks still unmatched, against what is
                             left: gate widening with time missing, measured
                             from the prediction or the last sighting,
-                            recently lost preferred
+                            recently lost preferred -- but not widening for a
+                            track hidden in a box another track holds
     candidate association   tentative tracks against what is left
+    doubtful association    confirmed tracks seen last frame and still
+                            unmatched, against the doubtful detections that
+                            overlap their predicted box by low_confidence_iou
     age every unmatched track, retire those past max_age
-    start a tentative track for every detection still unmatched
+    start a tentative track for every trusted detection still unmatched
     hand-over (known population only): a candidate seen min_hits times while
                             every ID is taken becomes the nearest lost track,
                             however far away -- an animal that jumped -- and
-                            the track takes over the candidate's motion
+                            the track takes over the candidate's motion;
+                            never a candidate overlapping a box another track
+                            holds, never to a track hidden in one
 
 Lost tracks compete in the primary pass on equal terms.  Holding them back
 for a later pass looks like giving established tracks priority, but it lets a
@@ -33,6 +43,17 @@ detection uncontested -- an ID swap the benchmark's high-density and
 courtship scenarios show plainly.  The recovery pass only ever sees what the
 primary pass could not place.  Newcomers come last, so a one-frame false
 detection never takes a detection from an identity that already exists.
+
+Where animals crowd, a detector adds boxes that are not animals: one less
+confident box around two touching animals it has already reported one by
+one, or the same animal again under another class.  Let such a box start a
+track and the track wanders from one spare box to the next, taking a real
+animal's detection whenever that animal's own is missed: a new ID and a
+swap at once.  So only trusted detections start, recover or are handed to a
+track; a doubtful one may only continue a track that was there a frame ago,
+right where it is.  And an animal lost inside another's box -- two seen as
+one -- is under that box: its ID waits there instead of being given a spare
+box across the arena.
 """
 
 from __future__ import annotations
@@ -48,14 +69,21 @@ from yoru_tracker.core.capabilities import TrackerInfo
 from yoru_tracker.core.config import TrackerConfig
 from yoru_tracker.core.tracker_base import TRACKER_API_VERSION, TrackerBase
 from yoru_tracker.core.types import (
+    Box,
     Detection,
     EventKind,
     Track,
     TrackEvent,
     TrackingResult,
 )
-from yoru_tracker.tracking.association import CostModel, Probe, associate, solve
-from yoru_tracker.tracking.geometry import center_distance
+from yoru_tracker.tracking.association import (
+    CostModel,
+    Probe,
+    associate,
+    duplicates,
+    solve,
+)
+from yoru_tracker.tracking.geometry import center_distance, contains, obb_iou
 from yoru_tracker.tracking.lifecycle import Lifecycle, TrackRecord
 
 logger = logging.getLogger(__name__)
@@ -127,13 +155,18 @@ class LiteTracker(TrackerBase):
         confirmed = [r for r in self._records if r.track_id is not None]
         tentative = [r for r in self._records if r.track_id is None]
 
-        remaining = list(range(len(valid)))
+        remaining, doubtful = self._sort_out(valid)
         matched = {}  # record key -> (detection index, cost)
         self._match(confirmed, self._primary_probe, valid, remaining, matched)
+        # Where the animals found so far are this frame.
+        held = [valid[index].box for index, _ in matched.values()]
         if self.config.association.recovery:
             leftover = [r for r in confirmed if r.key not in matched]
-            self._match(leftover, self._recovery_probe, valid, remaining, matched)
+            self._match(leftover, lambda r: self._recovery_probe(r, held), valid,
+                        remaining, matched)
         self._match(tentative, self._primary_probe, valid, remaining, matched)
+        recent = [r for r in confirmed if r.key not in matched and not r.missed_frames]
+        self._match(recent, self._doubtful_probe, valid, doubtful, matched)
 
         survivors = []
         reported = {}  # record key -> detection index, for confirmed tracks seen this frame
@@ -214,17 +247,48 @@ class LiteTracker(TrackerBase):
 
     # -- association passes ---------------------------------------------
 
+    def _sort_out(self, detections: List[Detection]) -> Tuple[List[int], List[int]]:
+        """Indices of the trusted detections and of the doubtful ones.
+
+        A repeat of a more confident detection of another class is in
+        neither: the animal it shows is already offered once.
+        """
+        cfg = self.config.association
+        repeats = (duplicates(detections, cfg.duplicate_iou)
+                   if cfg.duplicate_iou > 0 and not cfg.class_aware else frozenset())
+        trusted, doubtful = [], []
+        for index, det in enumerate(detections):
+            if index in repeats:
+                continue
+            if cfg.high_confidence > 0 and det.confidence < cfg.high_confidence:
+                doubtful.append(index)
+            else:
+                trusted.append(index)
+        return trusted, doubtful
+
+    def _hidden(self, record: TrackRecord, held: List[Box]) -> bool:
+        """Was *record* last seen where another animal's box now is?"""
+        return (self.config.association.hidden_guard
+                and any(contains(box, record.last_seen_center) for box in held))
+
     def _primary_probe(self, record: TrackRecord) -> Probe:
         box = record.predicted_box
         return Probe(box=box, class_id=record.class_id, anchors=((box[0], box[1]),),
                      gate=self.config.association.max_distance)
 
-    def _recovery_probe(self, record: TrackRecord) -> Probe:
+    def _doubtful_probe(self, record: TrackRecord) -> Probe:
+        # A doubtful detection may continue a track only right where it is.
+        return dataclasses.replace(self._primary_probe(record),
+                                   min_iou=self.config.association.low_confidence_iou)
+
+    def _recovery_probe(self, record: TrackRecord, held: List[Box]) -> Probe:
         cfg = self.config.association
         box = record.predicted_box
         # The track can have gone further the longer it has been unseen,
-        # up to the configured bound.
-        scale = min(float(record.missed_frames + 1), cfg.recovery_gate_scale)
+        # up to the configured bound -- unless it vanished into another
+        # animal's box, where it still is.
+        scale = (1.0 if self._hidden(record, held)
+                 else min(float(record.missed_frames + 1), cfg.recovery_gate_scale))
         max_age = max(1, self.config.lifecycle.max_age)
         return Probe(
             box=box,
@@ -242,6 +306,11 @@ class LiteTracker(TrackerBase):
         false detection is never mistaken for a missing animal.  Lost tracks
         and qualified candidates are paired by distance with no gate: with
         the animal count known, the far one is still the missing one.
+
+        Two exceptions keep a spare box from taking a missing animal's ID: a
+        candidate overlapping a box another track holds is most likely a
+        second box on that animal, and a track lost inside such a box is
+        hidden under it, not missing.
         """
         min_hits = self.config.lifecycle.min_hits
         ready = [r for r in survivors
@@ -249,6 +318,13 @@ class LiteTracker(TrackerBase):
         lost = [r for r in lost if r.key not in index_of]
         if not ready or not lost or self._lifecycle.has_room():
             return
+        if self.config.association.hidden_guard:
+            held = [detections[index].box for index in reported.values()]
+            ready = [r for r in ready
+                     if not any(obb_iou(detections[index_of[r.key]].box, box) > 0 for box in held)]
+            lost = [r for r in lost if not self._hidden(r, held)]
+            if not ready or not lost:
+                return
         class_aware = self.config.association.class_aware
         cost = np.full((len(lost), len(ready)), np.inf)
         for i, track in enumerate(lost):

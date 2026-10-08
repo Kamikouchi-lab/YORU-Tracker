@@ -1,8 +1,9 @@
 """Lite tracker behaviour: the cases the design requires before Advanced work.
 
 Track creation, update and deletion; MAX_AGE; stable IDs during smooth motion;
-crossing tracks; detector dropout; animals appearing and disappearing; OBB
-angle wrap; invalid detections; empty frames; reset; determinism.
+crossing tracks; detector dropout; animals appearing and disappearing; the
+spare boxes a detector adds where animals crowd; OBB angle wrap; invalid
+detections; empty frames; reset; determinism.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import math
 
 import pytest
 
-from yoru_tracker.core import EventKind, TrackerConfig, TrackState, create_tracker
+from yoru_tracker.core import Detection, EventKind, TrackerConfig, TrackState, create_tracker
 from yoru_tracker.core.config import AssociationConfig, LifecycleConfig
 
 from conftest import det, walk
@@ -249,6 +250,116 @@ def test_known_population_ignores_one_frame_false_positives():
     assert {x.track_id: (x.cx, x.cy) for x in r.tracked}[1] == (400, 300)
 
 
+# -- spare boxes ---------------------------------------------------------------
+
+def box(x1, y1, x2, y2, conf=0.9, cls=0, name="fly"):
+    return Detection.from_xyxy(x1, y1, x2, y2, confidence=conf, class_id=cls, class_name=name)
+
+
+def test_a_doubtful_detection_never_starts_a_track():
+    t = lite()
+    r = t.update([det(100, 100), det(300, 300, conf=0.3)], 0)   # not even on the first frame
+    assert ids(r) == [0] and len(r.unassigned) == 1
+    for f in range(1, 6):
+        r = t.update([det(100, 100), det(300, 300, conf=0.3)], f)
+    assert ids(r) == [0]
+
+
+def test_a_doubtful_detection_continues_a_track_where_it_is():
+    t = lite()
+    for f in range(5):
+        t.update([det(100 + 2 * f, 100)], f)
+    r = t.update([det(110, 100, conf=0.3)], 5)   # seen less clearly, right where expected
+    assert ids(r) == [0] and r.tracked[0].detection.confidence == 0.3
+
+
+def test_a_doubtful_detection_does_not_bring_back_a_lost_track():
+    t = lite()
+    for f in range(5):
+        t.update([det(100, 100)], f)
+    t.update([], 5)
+    r = t.update([det(100, 100, conf=0.3)], 6)
+    assert ids(r) == [] and ids(r, predicted=True) == [0]
+
+
+@pytest.mark.parametrize("high_confidence", [0.5, 0.0])
+def test_a_box_around_two_touching_animals_is_not_a_third(high_confidence):
+    # Both animals are detected, and the detector adds a weaker box around
+    # the pair, overlapping each by IoU 0.44.
+    t = create_tracker(TrackerConfig(
+        association=AssociationConfig(high_confidence=high_confidence)))
+    for f in range(20):
+        r = t.update([det(80 + f, 100), det(80 + f, 120), box(60 + f, 92, 100 + f, 128, conf=0.45)], f)
+    if not high_confidence:
+        assert ids(r) == [0, 1, 2]   # what it was before: a third ID on no animal
+        return
+    assert ids(r) == [0, 1]
+    # One animal missed: the box around both does not stand in for it.
+    r = t.update([det(100, 100), box(80, 92, 120, 128, conf=0.45)], 20)
+    assert ids(r) == [0] and ids(r, predicted=True) == [1]
+    r = t.update([det(101, 100), det(101, 120)], 21)
+    assert {x.track_id: x.cy for x in r.tracked} == {0: 100, 1: 120}
+
+
+@pytest.mark.parametrize("class_aware", [False, True])
+def test_a_box_of_another_class_on_one_animal(class_aware):
+    t = create_tracker(TrackerConfig(association=AssociationConfig(class_aware=class_aware)))
+    for f in range(10):
+        wing = det(101 + f, 101, conf=0.8, cls=1, name="wing_extension")
+        r = t.update([det(100 + f, 100, conf=0.9), wing], f)
+    if class_aware:
+        assert ids(r) == [0, 1]   # classes are different animals: never folded together
+        return
+    assert ids(r) == [0] and len(r.unassigned) == 1
+    # The more confident box is the one followed, whatever its class.
+    r = t.update([det(110, 100, conf=0.7), det(111, 101, conf=0.95, cls=1, name="wing_extension")], 10)
+    assert ids(r) == [0] and r.tracked[0].class_name == "wing_extension"
+
+
+def _hide_and_offer_a_spare(hidden_guard):
+    """Three animals; the first two are seen as one box, and a confident spare box sits half on the third."""
+    t = create_tracker(TrackerConfig(lifecycle=LifecycleConfig(population=3),
+                                     association=AssociationConfig(hidden_guard=hidden_guard)))
+    for f in range(10):
+        t.update([det(100, 100), det(140, 100), det(400, 300)], f)
+    for f in range(10, 16):
+        r = t.update([box(80, 92, 160, 108), det(400, 300), det(400, 312, conf=0.8)], f)
+    return r
+
+
+def test_an_animal_hidden_in_anothers_box_is_not_given_a_spare_box():
+    r = _hide_and_offer_a_spare(hidden_guard=True)
+    assert len(ids(r)) == 2 and len(ids(r, predicted=True)) == 1   # hidden, waiting
+    assert all(t.cy != 312 for t in r.tracked)
+    unguarded = _hide_and_offer_a_spare(hidden_guard=False)
+    assert sorted(t.cy for t in unguarded.tracked if not t.predicted) == [100, 300, 312]
+
+
+def _hide_then_appear_nearby(hidden_guard):
+    t = create_tracker(TrackerConfig(
+        association=AssociationConfig(max_distance=30.0, hidden_guard=hidden_guard)))
+    for f in range(5):
+        t.update([det(100, 100), det(100, 118)], f)   # side by side
+    for f in range(5, 8):
+        t.update([box(80, 92, 120, 126)], f)          # seen as one box
+    return t.update([box(80, 92, 120, 126), det(160, 109)], 8)
+
+
+def test_a_track_hidden_in_anothers_box_is_looked_for_there():
+    # Lost for three frames, its recovery gate would have widened to 90 px;
+    # last seen inside the box that holds its neighbour, it stays at 30.
+    assert len(ids(_hide_then_appear_nearby(hidden_guard=True))) == 1
+    assert len(ids(_hide_then_appear_nearby(hidden_guard=False))) == 2
+
+
+def test_version_1_settings_track_as_before():
+    old = TrackerConfig.from_dict({"config_version": 1, "tracker": {}})
+    t = create_tracker(old)
+    for f in range(10):
+        r = t.update([det(80 + f, 100), det(80 + f, 120), box(60 + f, 92, 100 + f, 128, conf=0.45)], f)
+    assert ids(r) == [0, 1, 2]
+
+
 # -- geometry ------------------------------------------------------------------
 
 def test_obb_angle_wrap_does_not_break_a_track():
@@ -350,7 +461,10 @@ def test_determinism():
     rng = random.Random(1)
     frames = []
     for _ in range(150):
-        frames.append([det(rng.uniform(0, 600), rng.uniform(0, 400)) for _ in range(rng.randint(0, 6))])
+        # Doubtful detections and second classes too: every path through an update.
+        frames.append([det(rng.uniform(0, 600), rng.uniform(0, 400), conf=rng.uniform(0.2, 1.0),
+                           cls=rng.randint(0, 1))
+                       for _ in range(rng.randint(0, 6))])
     runs = []
     for _ in range(2):
         t = lite()

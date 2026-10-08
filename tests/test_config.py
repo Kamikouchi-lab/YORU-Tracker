@@ -18,6 +18,10 @@ def test_defaults_are_valid_and_follow_the_design():
     assert c.association.iou_weight == 1.0
     assert c.association.axis_weight == 0.25
     assert c.association.max_distance == 100.0
+    assert c.association.high_confidence == 0.5
+    assert c.association.low_confidence_iou == 0.5
+    assert c.association.duplicate_iou == 0.5
+    assert c.association.hidden_guard
     assert c.kalman.enabled
     assert not c.advanced.reid and not c.advanced.occlusion_recovery
 
@@ -62,6 +66,10 @@ def test_a_misspelt_key_is_an_error_not_a_silent_default():
     ("tracker:\n  association:\n    max_distance: .nan\n", "max_distance must be a finite number"),
     ("tracker:\n  association:\n    distance_weight: .inf\n", "distance_weight must be a finite"),
     ("tracker:\n  kalman:\n    process_noise: .nan\n", "process_noise must be a finite"),
+    ("tracker:\n  association:\n    high_confidence: 1.5\n", "high_confidence must be within"),
+    ("tracker:\n  association:\n    low_confidence_iou: -0.1\n", "low_confidence_iou must be within"),
+    ("tracker:\n  association:\n    duplicate_iou: 2\n", "duplicate_iou must be within"),
+    ("tracker:\n  association:\n    hidden_guard: 1\n", "hidden_guard must be bool"),
 ])
 def test_invalid_values_are_named(yaml_text, fragment):
     with pytest.raises(ConfigError, match=fragment.replace(".", r"\.")):
@@ -74,11 +82,27 @@ def test_every_problem_is_reported_at_once():
     assert len(exc.value.problems) == 2
 
 
-def test_a_future_config_version_is_refused():
+@pytest.mark.parametrize("version", [0, CONFIG_VERSION + 1, True, "2"])
+def test_an_unknown_config_version_is_refused(version):
     data = TrackerConfig().to_dict()
-    data["config_version"] = CONFIG_VERSION + 1
+    data["config_version"] = version
     with pytest.raises(ConfigError, match="config_version"):
         TrackerConfig.from_dict(data)
+
+
+def test_a_version_1_file_still_means_what_it_did():
+    # Written before high_confidence, duplicate_iou and hidden_guard existed:
+    # read with them off, so it tracks exactly as it did then.
+    c = TrackerConfig.from_yaml("config_version: 1\ntracker:\n  lifecycle:\n    population: 2\n")
+    assert c.lifecycle.population == 2
+    assert c.association.high_confidence == 0.0
+    assert c.association.duplicate_iou == 0.0
+    assert not c.association.hidden_guard
+    assert c.association.max_distance == 100.0
+    # Saved again, it is a version-2 file with the same meaning.
+    data = c.to_dict()
+    assert data["config_version"] == CONFIG_VERSION == 2
+    assert TrackerConfig.from_dict(data) == c
 
 
 def test_advanced_options_are_not_silently_ignored_by_lite():

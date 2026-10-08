@@ -72,7 +72,7 @@ A rectangle's `angle` is defined modulo π. It is an axis, never a heading.
 |---|---|
 | `frame_id`, `timestamp` | As passed to `update`. |
 | `tracked` | One `TrackedDetection` per confirmed track, sorted by `track_id`. Lost tracks are included with `predicted=True`. |
-| `unassigned` | Valid detections not part of a confirmed track this frame (a newcomer still tentative, a detection left over when the population is full). |
+| `unassigned` | Valid detections not part of a confirmed track this frame (a newcomer still tentative, a detection left over when the population is full, a doubtful or repeated box no track took). |
 | `rejected` | Invalid detections. |
 | `events` | `TrackEvent`s of this frame. |
 
@@ -113,17 +113,29 @@ Frozen and validated; `to_dict()` / `from_dict()`, `to_yaml()` / `from_yaml()`,
 `save(path)` / `load(path)` (YAML, or JSON by extension). On disk:
 
 ```yaml
-config_version: 1
+config_version: 2
 tracker:
   mode: lite
   lifecycle:   {max_age: 10, min_hits: 2, population: 0}
   association: {distance_weight: 1.0, iou_weight: 1.0, axis_weight: 0.25,
                 size_weight: 0.0, max_distance: 100.0, min_iou: 0.0,
-                class_aware: false, recovery: true, recovery_gate_scale: 3.0}
+                class_aware: false, recovery: true, recovery_gate_scale: 3.0,
+                high_confidence: 0.5, low_confidence_iou: 0.5,
+                duplicate_iou: 0.5, hidden_guard: true}
   kalman:      {enabled: true, process_noise: 0.2, measurement_noise: 0.1}
   advanced:    {reid: false, occlusion_recovery: false}
   log_events: false
 ```
+
+Four association settings deal with the spare boxes a detector adds where
+animals crowd:
+
+| Key | |
+|---|---|
+| `high_confidence` | Detections below it are doubtful: they never start a track, never bring a lost one back and are never handed to one. `0` trusts every detection. |
+| `low_confidence_iou` | A doubtful detection may continue a track seen in the previous frame only if it overlaps the track's predicted box by at least this IoU. |
+| `duplicate_iou` | Two detections of different classes overlapping by more than this are one animal; the more confident is used. Only while `class_aware` is false. `0` turns it off. |
+| `hidden_guard` | A lost track last seen inside a box another track holds is hidden there: its recovery gate does not widen and it is not handed a detection elsewhere. A detection overlapping a held box is never handed to a lost track. |
 
 Unknown keys, wrong types, out-of-range values, non-finite numbers (`.nan`,
 `.inf`), an unsupported `config_version`, and `advanced.*` options on a mode
@@ -132,7 +144,10 @@ reason at once. A file may give
 only some keys; the rest take their defaults.
 
 `config_version` changes when a key is renamed or changes meaning;
-`from_dict` then learns to read the old version.
+`from_dict` then learns to read the old version. Version 1 predates
+`high_confidence`, `duplicate_iou` and `hidden_guard`: a version-1 file is read
+with them off (`0`, `0`, `false`), so it tracks exactly as it did when it was
+written, and is saved again as version 2.
 
 ## Capabilities — `TrackerInfo`
 

@@ -40,6 +40,10 @@ _FIELDS = (
      "Detections a new track needs before it gets an ID (1 = immediately)."),
     ("association", "max_distance", "Max distance (px)", float,
      "Furthest a detection may be from where a track is predicted to be."),
+    ("association", "high_confidence", "Trusted confidence (>=)", float,
+     "Less confident detections never start a track, bring one back or take a lost ID; "
+     "they only continue a track seen a frame ago, right where it is. Keeps out the weaker "
+     "box a detector adds around two touching animals. 0: trust every detection."),
     ("association", "distance_weight", "Distance weight", float, "Cost of centre distance."),
     ("association", "iou_weight", "IoU weight", float, "Cost of poor box overlap."),
     ("association", "axis_weight", "Axis weight", float,
@@ -48,6 +52,10 @@ _FIELDS = (
      "Never give a track a detection of another class."),
     ("association", "recovery", "Recovery pass for lost tracks", bool,
      "Look for lost tracks again with a gate that widens the longer they are missing."),
+    ("association", "hidden_guard", "Keep hidden animals' IDs in place", bool,
+     "An animal lost inside another's box is hidden there: its ID waits for it instead of "
+     "jumping to a detection elsewhere, and a box overlapping a tracked animal is never "
+     "handed to a lost ID."),
     ("kalman", "enabled", "Motion prediction (Kalman)", bool,
      "Predict where each track moves; off = expect it where it was last seen."),
 )
@@ -56,6 +64,12 @@ _MORE = (
     ("association", "size_weight", "Size weight", float, "Cost of differing box areas."),
     ("association", "min_iou", "Min IoU", float,
      "Reject pairs with less overlap than this whose centres are over half a body apart (0 = off)."),
+    ("association", "low_confidence_iou", "Min IoU, doubtful detection", float,
+     "How much a detection below the trusted confidence must overlap a track's predicted box "
+     "to continue it."),
+    ("association", "duplicate_iou", "Same animal, other class IoU", float,
+     "Boxes of different classes overlapping more than this are one animal, and the more "
+     "confident is used. Only while matching across classes. 0 = off."),
     ("association", "recovery_gate_scale", "Recovery gate (x max dist.)", float,
      "How far the recovery gate may widen."),
     ("kalman", "process_noise", "Process noise (x size)", float, "Expected acceleration."),

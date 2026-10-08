@@ -14,6 +14,14 @@ First version: the application, the tracker API and the Lite tracker.
   track lifecycle (tentative, active, lost, retired) with contiguous IDs, and a
   known-population mode.  A jump, or a stop while unseen, restarts a track's
   motion instead of turning into a velocity spike.
+- Crowded arenas: the spare boxes a detector adds where animals crowd no
+  longer start tracks or take IDs.  Detections below `high_confidence` only
+  continue a track seen a frame ago (`low_confidence_iou`); a box of another
+  class on an animal already reported is set aside (`duplicate_iou`); a track
+  lost inside another animal's box keeps its recovery gate and is not handed
+  a detection elsewhere, and a box overlapping a tracked animal is never
+  handed to a lost track (`hidden_guard`).  Configuration version 2; a
+  version-1 file is read with these off and tracks as it did.
 - Baseline tracker wrapping YORU's `match_to_previous`, for comparison.
 - Detection through YORU's detector registry; OBB support throughout.
 - Video tracking with timeline, frame stepping, overlays, track inspection,
@@ -29,5 +37,6 @@ First version: the application, the tracker API and the Lite tracker.
   to reproduce a run, including where the frame rate came from; readers for
   YORU's analysis and real-time detection CSVs.
 - Metrics (ID switches, fragmentation, recovery, false new IDs, IDF1, MOTA),
-  16 synthetic behavioural scenarios, benchmark and regression gate; CI on
-  Windows.
+  20 synthetic behavioural scenarios — spanning boxes, class duplicates, an
+  animal hidden in a merge and a dense arena among them — benchmark and
+  regression gate; CI on Windows.

@@ -117,11 +117,25 @@ def test_lite_does_not_regress_against_the_reference(benchmark_rows):
 
 
 def test_lite_beats_the_yoru_baseline(benchmark_rows):
-    total = {}
+    total, by_scenario = {}, {}
     for row in benchmark_rows:
         total[row.tracker] = total.get(row.tracker, 0) + row.metrics.id_switches
-    assert total["lite"] * 10 < total["baseline"]
+        by_scenario.setdefault(row.scenario, {})[row.tracker] = row.metrics.id_switches
+    worse = [name for name, n in by_scenario.items() if n["lite"] > n["baseline"]]
+    assert not worse, f"more ID switches than YORU's baseline in {worse}"
+    # dense_arena, hard for any tracker without appearance, dominates the totals.
+    assert total["lite"] * 5 < total["baseline"]
     assert total["lite+N"] <= total["lite"] + 2
+
+
+def test_the_spare_boxes_are_what_their_scenarios_say():
+    spanning = make_scenario("spanning_box")
+    spans = [d for f in spanning.frames for d in f.detections if d.confidence < 0.6]
+    # Around a pair: taller than two animals side by side, or longer than two end to end.
+    assert spans and all(d.h > 30 or d.w > 70 for d in spans)
+    twins = [d for f in make_scenario("class_duplicates").frames for d in f.detections
+             if d.class_id == 1]
+    assert twins and all(d.class_name == "wing_extension" for d in twins)
 
 
 def test_lite_is_fast(benchmark_rows):
