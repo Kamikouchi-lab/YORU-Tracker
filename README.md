@@ -18,11 +18,13 @@ boxes included — works here without conversion.
 |---|---|---|
 | Purpose | Real-time detection, closed-loop triggers, recording | Identity, trajectories, tracking export |
 | Launch | `python -m yoru` | `python -m yoru_tracker` |
-| Depends on | — | YORU (≥ 2.0.0b3, < 3) |
+| Depends on | — | YORU (≥ 2.0.0b4, < 3) |
 
 ## Install
 
-YORU Tracker needs a YORU checkout next to it:
+YORU Tracker needs a YORU checkout next to it, at YORU v2.0.0 Beta 4 or
+later — the first YORU release with the external API YORU Tracker uses. The
+stable YORU v1.1.x is too old.
 
 ```text
 YORU-dev/
@@ -33,6 +35,8 @@ YORU-dev/
 Python 3.10 and [uv](https://docs.astral.sh/uv/):
 
 ```bash
+git clone -b v2.0.0-beta.4 https://github.com/Kamikouchi-lab/YORU.git
+git clone https://github.com/Kamikouchi-lab/YORU-Tracker.git
 cd YORU-Tracker
 uv sync
 ```
@@ -276,7 +280,7 @@ YORU_TRACKER_GUI_TESTS=1 uv run pytest -m gui         # also open the real windo
 
 CI (`.github/workflows/ci.yml`) runs `uv sync --locked`, the tests — the
 benchmark regression gate among them — and the benchmark table on Windows,
-with YORU checked out beside the repository at `yoru-tracker-lite`. The
+with YORU checked out beside the repository at `v2.0.0-beta.4`. The
 repository variables `YORU_REF` and `YORU_REPOSITORY` point it elsewhere; a
 manual run can name any YORU ref.
 

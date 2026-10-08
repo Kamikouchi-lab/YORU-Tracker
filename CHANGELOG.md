@@ -1,8 +1,10 @@
 # Changelog
 
-## 0.1.0 — unreleased
+## 0.1.0 — 2026-10-08
 
 First version: the application, the tracker API and the Lite tracker.
+Needs YORU 2.0.0 Beta 4 or later, below 3: the first YORU release with the
+external API YORU Tracker builds on.
 
 - `python -m yoru_tracker` / `yoru-tracker`: start screen with Realtime,
   Video and Batch tracking and the tracker settings; YORU-family logo and theme.

@@ -3,10 +3,10 @@
 #
 # YORU Tracker is built against a YORU checkout beside it (pyproject's
 # [tool.uv.sources]), so the job checks YORU out next to this repository:
-# the ref in the repository variable YORU_REF, or else yoru-tracker-lite,
-# the branch that carries YORU's external API.  A manual run can name any
-# ref.  `uv sync --locked` fails when uv.lock no longer matches pyproject
-# and that YORU: update the lock against the YORU it is meant for.
+# the ref in the repository variable YORU_REF, or else v2.0.0-beta.4,
+# the first YORU release that carries its external API.  A manual run can
+# name any ref.  `uv sync --locked` fails when uv.lock no longer matches
+# pyproject and that YORU: update the lock against the YORU it is meant for.
 
 name: CI
 
@@ -46,7 +46,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: ${{ vars.YORU_REPOSITORY || 'Kamikouchi-lab/YORU' }}
-          ref: ${{ inputs.yoru_ref || vars.YORU_REF || 'yoru-tracker-lite' }}
+          ref: ${{ inputs.yoru_ref || vars.YORU_REF || 'v2.0.0-beta.4' }}
           path: YORU
 
       # setup-uv publishes immutable full-version tags only (no @v10).

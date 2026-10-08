@@ -13,7 +13,7 @@ dependencies = [
     # Detectors, OBB geometry, cameras and the GUI primitives come from YORU,
     # through the names its docs/external_api.md promises to keep.  The bound
     # is the 2.x line that document describes.
-    "yoru>=2.0.0b3,<3",
+    "yoru>=2.0.0b4,<3",
     # Imported directly.  Unpinned on purpose: YORU pins them, and a second
     # set of pins here could only disagree with it.
     "numpy",
