@@ -141,6 +141,41 @@ def test_the_open_video_is_kept_while_it_is_busy(app, video_file, tmp_path):
     assert app.video._task is None
 
 
+def test_detections_loaded_over_a_flipped_video_are_exported_with_its_flips(app, tmp_path,
+                                                                             monkeypatch,
+                                                                             video_file):
+    import time
+
+    from conftest import BlobDetector
+
+    from yoru_tracker.export import read_metadata
+    from yoru_tracker.gui import video_view
+    from yoru_tracker.runtime.video import detect_and_track, export_run
+
+    stored = export_run(detect_and_track(video_file, BlobDetector(), TrackerConfig(),
+                                         v_flip=True), tmp_path / "stored")
+    monkeypatch.setattr(video_view.widgets, "ask_open_file",
+                        lambda *a, **k: str(stored["detections_csv"]))
+    app.show_view("video")
+    dpg.set_value("video_vflip", True)
+    app.video.open_video(str(video_file))
+    dpg.set_value("video_outdir", str(tmp_path / "gui"))
+
+    def finish(step):
+        step()
+        deadline = time.time() + 20
+        while app.video._task is not None and time.time() < deadline:
+            app.tick()
+            time.sleep(0.01)
+        assert app.video._task is None
+
+    finish(app.video.load_detections)
+    assert (app.video.run.v_flip, app.video.run.h_flip) == (True, False)
+    finish(app.video.export)
+    meta = read_metadata(tmp_path / "gui" / f"{video_file.stem}_tracks.json")
+    assert (meta["source"]["v_flip"], meta["source"]["h_flip"]) == (True, False)
+
+
 def test_the_batch_table_names_files_below_the_folder_and_changes_only_cells(app, tmp_path,
                                                                             monkeypatch):
     import time

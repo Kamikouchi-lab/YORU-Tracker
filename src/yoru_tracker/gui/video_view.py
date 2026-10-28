@@ -331,6 +331,8 @@ class VideoView:
         if not path:
             return
         info, config = self.source.info, self.state.tracker_config
+        # The boxes are drawn on the video as flipped now; exports say so.
+        v_flip, h_flip = self.source.v_flip, self.source.h_flip
 
         def work():
             from yoru_tracker.core.registry import create_tracker
@@ -359,7 +361,8 @@ class VideoView:
             results = track_frames(tracker, aligned)
             stats = RunStats(len(results), 0.0, time.perf_counter() - t0)
             return VideoTracking(info, config, {"detections_csv": path, "layout": layout},
-                                 aligned, results, stats, complete=True, tracker=tracker)
+                                 aligned, results, stats, complete=True, tracker=tracker,
+                                 v_flip=v_flip, h_flip=h_flip)
 
         self._start_task("load detections", work, self._retracked)
 

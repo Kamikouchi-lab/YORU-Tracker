@@ -64,6 +64,10 @@ class VideoTracking:
     recorded by the sequential pass, so that a seek can be checked against
     it (see :meth:`VideoFileSource.frame_at`); ``None`` when the file's
     times are not usable (missing, or not increasing).
+
+    *v_flip* / *h_flip* are the flips applied to every frame before
+    detection: the boxes are in the flipped frame, so whoever reads them
+    against the video (YORU-Explain, a re-render) must flip it the same way.
     """
 
     info: VideoInfo
@@ -75,6 +79,8 @@ class VideoTracking:
     complete: bool = False
     tracker: Optional[TrackerBase] = None
     frame_ms: Optional[List[float]] = field(default_factory=list)
+    v_flip: bool = False
+    h_flip: bool = False
 
     @property
     def processed(self) -> int:
@@ -131,6 +137,7 @@ def detect_and_track(
         run.detector_settings = detector_settings
         run.tracker = tracker
         run.frame_ms = []
+        run.v_flip, run.h_flip = bool(v_flip), bool(h_flip)
         fps = source.info.fps
         while True:
             if should_stop is not None and should_stop():
@@ -183,6 +190,8 @@ def retrack(run: VideoTracking, tracker_config: TrackerConfig) -> VideoTracking:
         complete=run.complete,
         tracker=tracker,
         frame_ms=run.frame_ms,
+        v_flip=run.v_flip,
+        h_flip=run.h_flip,
     )
 
 
@@ -221,6 +230,8 @@ def export_run(run: VideoTracking, out_dir, *, include_predicted: bool = False,
             "frame_count": run.info.frame_count,
             "width": run.info.width,
             "height": run.info.height,
+            "v_flip": run.v_flip,
+            "h_flip": run.h_flip,
         },
         outputs={k: str(v.name) for k, v in written.items()} | {
             "include_predicted": include_predicted, "rows": rows,
