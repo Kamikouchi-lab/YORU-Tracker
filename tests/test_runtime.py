@@ -118,6 +118,19 @@ def test_video_keeps_two_ids_and_exports(tmp_path, video_file, blob_detector):
     assert rows[0]["class_name"] == "blob"
 
 
+def test_the_metadata_records_the_flips_the_boxes_were_made_with(tmp_path, video_file,
+                                                                  blob_detector):
+    """Boxes of a flipped run are in the flipped frame; a reader must know."""
+    run = detect_and_track(video_file, blob_detector, TrackerConfig(), v_flip=True)
+    assert (run.v_flip, run.h_flip) == (True, False)
+    again = retrack(run, TrackerConfig())
+    meta = read_metadata(export_run(again, tmp_path)["metadata"])
+    assert (meta["source"]["v_flip"], meta["source"]["h_flip"]) == (True, False)
+    plain = detect_and_track(video_file, blob_detector, TrackerConfig())
+    meta = read_metadata(export_run(plain, tmp_path / "plain")["metadata"])
+    assert (meta["source"]["v_flip"], meta["source"]["h_flip"]) == (False, False)
+
+
 def test_retrack_reuses_detections_and_is_identical_with_the_same_settings(video_file):
     detector = BlobDetector()
     run = detect_and_track(video_file, detector, TrackerConfig())

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- The `*_tracks.json` of a video run records `v_flip` and `h_flip` under
+  `source`: the boxes are in the flipped frame, and whoever reads them against
+  the video (YORU-Explain, a re-render) must flip it the same way.
+
 ## 0.1.0 — 2026-10-08
 
 First version: the application, the tracker API and the Lite tracker.
